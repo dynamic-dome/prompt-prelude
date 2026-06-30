@@ -183,3 +183,24 @@ class TestRun:
     def test_corrupt_payload_no_throw(self, tmp_path):
         out = pp.run({}, atlas_root="x", state_dir=str(tmp_path), log_path=str(tmp_path / "l"), now=1.0)
         assert out == ""
+
+    # --- Härtung nach Codex-Gesamt-Review ---
+    def test_nondict_payload_no_throw(self, tmp_path):
+        out = pp.run([], atlas_root="x", state_dir=str(tmp_path), log_path=str(tmp_path / "l"), now=1.0)
+        assert out == ""
+
+
+class TestSessionSanitize:
+    def test_no_path_traversal(self, tmp_path):
+        state = tmp_path / "st"
+        state.mkdir()
+        pp.save_fired("../../../evil", str(state), {"x"})
+        # alle erzeugten Dateien liegen INNERHALB von state_dir
+        assert set(p.name for p in tmp_path.iterdir()) == {"st"}
+        assert len(list(state.iterdir())) == 1
+        # roundtrip mit derselben (sanitierten) id bleibt konsistent
+        assert pp.load_fired("../../../evil", str(state)) == {"x"}
+
+    def test_empty_session_id_defaults(self, tmp_path):
+        pp.save_fired("", str(tmp_path), {"z"})
+        assert pp.load_fired("", str(tmp_path)) == {"z"}

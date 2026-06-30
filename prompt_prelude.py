@@ -129,10 +129,19 @@ def dedupe_key(domain, phase):
     return "_planning_" if phase == "planning" else "_none_"
 
 
+def _safe_session(session_id):
+    """Sanitize gegen Pfad-Traversal: nur [A-Za-z0-9_-], max 64 Zeichen."""
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", str(session_id))[:64]
+    return safe or "default"
+
+
+def _fired_path(session_id, state_dir):
+    return os.path.join(state_dir, f"fired_{_safe_session(session_id)}.json")
+
+
 def load_fired(session_id, state_dir):
     try:
-        p = os.path.join(state_dir, f"fired_{session_id}.json")
-        with open(p, encoding="utf-8") as f:
+        with open(_fired_path(session_id, state_dir), encoding="utf-8") as f:
             return set(json.load(f))
     except Exception:
         return set()
@@ -141,9 +150,11 @@ def load_fired(session_id, state_dir):
 def save_fired(session_id, state_dir, fired):
     try:
         os.makedirs(state_dir, exist_ok=True)
-        p = os.path.join(state_dir, f"fired_{session_id}.json")
-        with open(p, "w", encoding="utf-8") as f:
+        p = _fired_path(session_id, state_dir)
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(sorted(fired), f)
+        os.replace(tmp, p)  # atomar, gegen Teil-Schreib-Races
     except Exception:
         pass
 
@@ -187,7 +198,7 @@ def query_atlas(terms, db_path, limit=3):
         return []
     try:
         import sqlite3
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(db_path, timeout=0.5)
         try:
             rows = conn.execute(
                 "SELECT record_id FROM chunks WHERE chunks MATCH ? ORDER BY rank LIMIT ?",
@@ -201,6 +212,8 @@ def query_atlas(terms, db_path, limit=3):
 
 
 def run(payload, *, atlas_root, state_dir, log_path, now):
+    if not isinstance(payload, dict):
+        return ""
     prompt = payload.get("prompt", "") or ""
     session_id = payload.get("session_id", "default") or "default"
 
@@ -237,7 +250,7 @@ def run(payload, *, atlas_root, state_dir, log_path, now):
 
 def main():
     try:
-        payload = json.loads(sys.stdin.read() or "{}")
+        payload = json.loads(sys.stdin.read(200_000) or "{}")  # bounded gegen riesigen Paste
         out = run(
             payload,
             atlas_root=ATLAS_ROOT_DEFAULT,
