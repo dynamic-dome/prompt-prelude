@@ -154,3 +154,47 @@ def log_telemetry(record, log_path):
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception:
         pass
+
+
+ATLAS_ROOT_DEFAULT = r"C:\Users\domes\AI\agent-memory-atlas\.atlas-index"
+
+STOP_WORDS = {"ich", "du", "wir", "das", "die", "der", "ein", "eine", "ist", "sind",
+              "hab", "habe", "bitte", "kannst", "mich", "mir", "wie", "was", "warum",
+              "machen", "kann", "soll", "beim", "wenn", "dann", "auch", "noch", "mal"}
+
+
+def extract_query(prompt):
+    low = prompt.lower()
+    domains = [d for d, kws in DOMAIN_HINTS.items() if any(kw in low for kw in kws)]
+    tokens = re.findall(r"[a-zA-ZäöüÄÖÜß]{4,}", prompt)
+    tokens = [t for t in tokens if t.lower() not in STOP_WORDS]
+    return " ".join((domains + tokens[:8])[:12])
+
+
+def find_atlas_db(atlas_root):
+    try:
+        cur = os.path.join(atlas_root, "CURRENT.json")
+        with open(cur, encoding="utf-8") as f:
+            active = json.load(f)["active_path"]
+        db = os.path.join(atlas_root, active, "bm25.db")
+        return db if os.path.exists(db) else None
+    except Exception:
+        return None
+
+
+def query_atlas(terms, db_path, limit=3):
+    if not terms.strip() or not db_path:
+        return []
+    try:
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        try:
+            rows = conn.execute(
+                "SELECT record_id FROM chunks WHERE chunks MATCH ? ORDER BY rank LIMIT ?",
+                (terms, limit),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [r[0] for r in rows]
+    except Exception:
+        return []

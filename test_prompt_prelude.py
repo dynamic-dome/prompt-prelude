@@ -130,3 +130,30 @@ class TestTelemetry:
 
     def test_failsoft_bad_path(self):
         pp.log_telemetry({"a": 1}, "Z:/does/not/exist/t.jsonl")  # darf nicht werfen
+
+
+class TestExtractQuery:
+    def test_strips_stopwords_keeps_domain(self):
+        q = pp.extract_query("ich habe einen bug im traceback was kann ich machen")
+        assert "debug" in q and "ich" not in q.split()
+
+    def test_caps_length(self):
+        q = pp.extract_query("wort " * 40)
+        assert len(q.split()) <= 12
+
+
+class TestQueryAtlas:
+    def test_finds_known_record(self, fake_atlas_db):
+        out = pp.query_atlas("debugging", fake_atlas_db, limit=3)
+        assert "skill:diagnose-hitl" in out
+
+    def test_empty_terms(self, fake_atlas_db):
+        assert pp.query_atlas("   ", fake_atlas_db) == []
+
+    def test_failsoft_bad_db(self):
+        assert pp.query_atlas("debugging", "Z:/nope/bm25.db") == []
+
+
+class TestFindAtlasDb:
+    def test_missing_root(self, tmp_path):
+        assert pp.find_atlas_db(str(tmp_path)) is None
