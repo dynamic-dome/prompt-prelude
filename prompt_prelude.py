@@ -111,3 +111,36 @@ def make_output(additional_context):
             "additionalContext": additional_context,
         }
     }, ensure_ascii=False)
+
+
+def dedupe_key(domain, phase):
+    if domain:
+        return domain
+    return "_planning_" if phase == "planning" else "_none_"
+
+
+def load_fired(session_id, state_dir):
+    try:
+        p = os.path.join(state_dir, f"fired_{session_id}.json")
+        with open(p, encoding="utf-8") as f:
+            return set(json.load(f))
+    except Exception:
+        return set()
+
+
+def save_fired(session_id, state_dir, fired):
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+        p = os.path.join(state_dir, f"fired_{session_id}.json")
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(sorted(fired), f)
+    except Exception:
+        pass
+
+
+def log_telemetry(record, log_path):
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass

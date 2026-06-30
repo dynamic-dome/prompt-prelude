@@ -85,3 +85,32 @@ class TestMakeOutput:
         obj = _json.loads(raw)
         assert obj["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
         assert obj["hookSpecificOutput"]["additionalContext"] == "<prompt_prelude>x</prompt_prelude>"
+
+
+class TestDedupe:
+    def test_key_domain(self):
+        assert pp.dedupe_key("ui-frontend", "quiet") == "ui-frontend"
+
+    def test_key_planning_only(self):
+        assert pp.dedupe_key(None, "planning") == "_planning_"
+
+    def test_roundtrip(self, tmp_state_dir):
+        assert pp.load_fired("s1", tmp_state_dir) == set()
+        pp.save_fired("s1", tmp_state_dir, {"debug", "workflow"})
+        assert pp.load_fired("s1", tmp_state_dir) == {"debug", "workflow"}
+
+    def test_missing_returns_empty(self, tmp_state_dir):
+        assert pp.load_fired("nope", tmp_state_dir) == set()
+
+
+class TestTelemetry:
+    def test_append_jsonl(self, tmp_state_dir):
+        import os
+        log = os.path.join(tmp_state_dir, "t.jsonl")
+        pp.log_telemetry({"a": 1}, log)
+        pp.log_telemetry({"b": 2}, log)
+        lines = open(log, encoding="utf-8").read().strip().splitlines()
+        assert len(lines) == 2 and _json.loads(lines[0])["a"] == 1
+
+    def test_failsoft_bad_path(self):
+        pp.log_telemetry({"a": 1}, "Z:/does/not/exist/t.jsonl")  # darf nicht werfen
