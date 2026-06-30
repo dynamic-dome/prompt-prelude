@@ -4,8 +4,18 @@ stdlib-only. Fail-soft: Fehler -> kein Output. Exit immer 0.
 Opt-out: Prompt mit //raw prefixen."""
 import sys, os, json, re, time
 
-if hasattr(sys.stdout, "reconfigure") and sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
-    sys.stdout.reconfigure(encoding="utf-8")
+
+def _force_utf8(stream):
+    """Stream auf UTF-8 stellen, selbst fail-soft (exotische Streams können werfen)."""
+    try:
+        if hasattr(stream, "reconfigure") and stream.encoding and stream.encoding.lower() != "utf-8":
+            stream.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+
+_force_utf8(sys.stdout)
+_force_utf8(sys.stderr)
 
 MIN_PROMPT_LEN = 30
 TRIVIAL = {"ja", "nein", "ok", "okay", "danke", "bitte", "weiter", "stop",
@@ -19,8 +29,8 @@ def should_skip(prompt):
     (für ehrliche Telemetrie, längen-unabhängig), danach Längen-/Wort-Count-Gate
     als 'too_short'. Sonst maskiert der Längen-Check fast alle trivialen Fälle.
     """
-    s = prompt.strip()
-    if s.startswith("//raw"):
+    s = (prompt if isinstance(prompt, str) else "").strip()
+    if s.lower().startswith("//raw"):
         return True, "raw"
     if s.lower() in TRIVIAL:
         return True, "trivial"

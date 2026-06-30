@@ -21,6 +21,22 @@ class TestShouldSkip:
         skip, reason = pp.should_skip("Baue mir eine Tabelle aus den Verkaufsdaten als Chart")
         assert skip is False and reason == ""
 
+    # --- Härtung nach Codex-Review Task 1 ---
+    def test_none_input_does_not_throw(self):
+        assert pp.should_skip(None) == (True, "too_short")
+
+    def test_nonstring_input_does_not_throw(self):
+        assert pp.should_skip({"a": 1}) == (True, "too_short")
+
+    def test_whitespace_only(self):
+        assert pp.should_skip("        ") == (True, "too_short")
+
+    def test_raw_case_insensitive(self):
+        assert pp.should_skip("//RAW genau das jetzt bitte tun") == (True, "raw")
+
+    def test_raw_with_leading_space(self):
+        assert pp.should_skip("   //raw genau das jetzt bitte tun") == (True, "raw")
+
 
 class TestDetectDomain:
     def test_ui_prompt(self):
