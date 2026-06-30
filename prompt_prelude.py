@@ -55,3 +55,28 @@ def detect_phase(prompt):
     """Binär: planning, wenn ein Planungs-Trigger matcht; sonst quiet."""
     low = prompt.lower()
     return "planning" if any(t in low for t in PLANNING_TRIGGERS) else "quiet"
+
+
+DOMAIN_ROUTING = {
+    "ui-frontend":   "Durchsuche das Capability-RAG (memory_search) nach UI-/Design-Skills "
+                     "(z.B. frontend-design, modern-web-design), bevor du einen Ansatz festlegst.",
+    "data-analysis": "Prüfe das Capability-RAG nach Daten-Viz-Skills (z.B. d3js-visualization) "
+                     "und passenden Auswertungs-Patterns.",
+    "workflow":      "Prüfe das Capability-RAG nach Orchestrierungs-/Workflow-Skills und Multi-Agent-Patterns.",
+    "debug":         "Ziehe systematic-debugging / diagnose-hitl in Betracht und reproduziere, bevor du fixt.",
+    "research":      "Prüfe die NotebookLM-Registry und deep-research, bevor du aus dem Gedächtnis antwortest.",
+    "code-impl":     "Prüfe kurz, ob ein passender Skill oder ein Pattern im Capability-RAG existiert.",
+}
+
+PLANNING_ROUTING = ("Planungsphase: Konsultiere die SE-Wissensbasis (§13) und arbeite im "
+                    "Sparring-Modus (§19) — benenne aktiv Schwächen und schlage eine Definition-of-Done vor.")
+
+
+def build_rag_routing(domain, phase):
+    """M2-Instruktions-Zeilen je Domain + optional Planungs-Zeile."""
+    lines = []
+    if domain in DOMAIN_ROUTING:
+        lines.append(DOMAIN_ROUTING[domain])
+    if phase == "planning":
+        lines.append(PLANNING_ROUTING)
+    return lines

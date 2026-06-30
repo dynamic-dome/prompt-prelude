@@ -42,3 +42,20 @@ class TestDetectPhase:
 
     def test_quiet_prompt(self):
         assert pp.detect_phase("fix den fehler in zeile 12") == "quiet"
+
+
+class TestBuildRagRouting:
+    def test_domain_only(self):
+        out = pp.build_rag_routing("ui-frontend", "quiet")
+        assert len(out) == 1 and "UI-/Design-Skills" in out[0]
+
+    def test_planning_adds_line(self):
+        out = pp.build_rag_routing("workflow", "planning")
+        assert len(out) == 2 and any("Sparring" in l for l in out)
+
+    def test_nothing_relevant(self):
+        assert pp.build_rag_routing(None, "quiet") == []
+
+    def test_planning_without_domain(self):
+        out = pp.build_rag_routing(None, "planning")
+        assert len(out) == 1 and "SE-Wissensbasis" in out[0]
