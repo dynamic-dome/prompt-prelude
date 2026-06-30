@@ -157,3 +157,29 @@ class TestQueryAtlas:
 class TestFindAtlasDb:
     def test_missing_root(self, tmp_path):
         assert pp.find_atlas_db(str(tmp_path)) is None
+
+
+class TestRun:
+    def test_trivial_prompt_no_output(self, tmp_path):
+        out = pp.run({"prompt": "ja", "session_id": "s"},
+                     atlas_root="x", state_dir=str(tmp_path), log_path=str(tmp_path / "l"), now=1.0)
+        assert out == ""
+
+    def test_ui_prompt_emits_valid_json(self, tmp_path, monkeypatch, fake_atlas_db):
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
+        out = pp.run({"prompt": "baue ein responsive component layout für den header", "session_id": "s"},
+                     atlas_root="x", state_dir=str(tmp_path / "st"), log_path=str(tmp_path / "l"), now=1.0)
+        obj = _json.loads(out)
+        assert obj["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+        assert "ui-frontend" in obj["hookSpecificOutput"]["additionalContext"]
+
+    def test_dedupe_second_call_silent(self, tmp_path, monkeypatch, fake_atlas_db):
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
+        kw = dict(atlas_root="x", state_dir=str(tmp_path / "st"), log_path=str(tmp_path / "l"), now=1.0)
+        p = {"prompt": "baue ein responsive component layout für den header", "session_id": "s"}
+        assert pp.run(p, **kw) != ""
+        assert pp.run(p, **kw) == ""   # zweiter UI-Prompt derselben Session = still
+
+    def test_corrupt_payload_no_throw(self, tmp_path):
+        out = pp.run({}, atlas_root="x", state_dir=str(tmp_path), log_path=str(tmp_path / "l"), now=1.0)
+        assert out == ""

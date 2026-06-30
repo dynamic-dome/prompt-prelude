@@ -198,3 +198,59 @@ def query_atlas(terms, db_path, limit=3):
         return [r[0] for r in rows]
     except Exception:
         return []
+
+
+def run(payload, *, atlas_root, state_dir, log_path, now):
+    prompt = payload.get("prompt", "") or ""
+    session_id = payload.get("session_id", "default") or "default"
+
+    skip, reason = should_skip(prompt)
+    if skip:
+        log_telemetry({"t": now, "skip": reason, "session": session_id}, log_path)
+        return ""
+
+    domain = detect_domain(prompt)
+    phase = detect_phase(prompt)
+    routing = build_rag_routing(domain, phase)
+
+    if not routing:
+        log_telemetry({"t": now, "skip": "no_routing", "session": session_id}, log_path)
+        return ""
+
+    key = dedupe_key(domain, phase)
+    fired = load_fired(session_id, state_dir)
+    if key in fired:
+        log_telemetry({"t": now, "skip": "deduped", "key": key, "session": session_id}, log_path)
+        return ""
+
+    caps = query_atlas(extract_query(prompt), find_atlas_db(atlas_root))
+    ctx = compose_context(domain, phase, routing, caps)
+    out = make_output(ctx)
+
+    if out:
+        fired.add(key)
+        save_fired(session_id, state_dir, fired)
+        log_telemetry({"t": now, "fired": True, "domain": domain, "phase": phase,
+                       "key": key, "caps": caps, "session": session_id}, log_path)
+    return out
+
+
+def main():
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+        out = run(
+            payload,
+            atlas_root=ATLAS_ROOT_DEFAULT,
+            state_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), ".dedupe"),
+            log_path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt_prelude.jsonl"),
+            now=time.time(),
+        )
+        if out:
+            print(out)
+    except Exception:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
