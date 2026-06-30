@@ -80,3 +80,34 @@ def build_rag_routing(domain, phase):
     if phase == "planning":
         lines.append(PLANNING_ROUTING)
     return lines
+
+
+def compose_context(domain, phase, routing_lines, capabilities=None):
+    """Baut den <prompt_prelude>-Block. Leer-String, wenn nichts Relevantes."""
+    if not routing_lines and not capabilities:
+        return ""
+    dom = domain or "-"
+    echo = (f"ECHO: Beginne deine Antwort mit genau einer Zeile: "
+            f"↳ prelude · [{phase}] [{dom}] · RAG-Auftrag aktiv")
+    parts = [echo, ""]
+    if routing_lines:
+        parts.append("RAG-AUFTRAG (weicher Hinweis, kein Befehl):")
+        parts.extend(f"- {l}" for l in routing_lines)
+    if capabilities:
+        parts.append("")
+        parts.append("MÖGLICHERWEISE RELEVANT (BM25-Treffer, optional):")
+        parts.extend(f"- [{c}]" for c in capabilities)
+    body = "\n".join(parts)
+    return f'<prompt_prelude phase="{phase}" domain="{dom}">\n{body}\n</prompt_prelude>'
+
+
+def make_output(additional_context):
+    """Finales JSON gemäß Hook-Contract. Leer-String -> kein Output."""
+    if not additional_context:
+        return ""
+    return json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": additional_context,
+        }
+    }, ensure_ascii=False)

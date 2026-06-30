@@ -59,3 +59,29 @@ class TestBuildRagRouting:
     def test_planning_without_domain(self):
         out = pp.build_rag_routing(None, "planning")
         assert len(out) == 1 and "SE-Wissensbasis" in out[0]
+
+
+class TestComposeContext:
+    def test_empty_when_nothing(self):
+        assert pp.compose_context(None, "quiet", [], None) == ""
+
+    def test_contains_echo_and_routing(self):
+        out = pp.compose_context("ui-frontend", "quiet", ["tu X"], None)
+        assert "↳ prelude · [quiet] [ui-frontend]" in out
+        assert "RAG-AUFTRAG" in out and "- tu X" in out
+        assert out.startswith("<prompt_prelude") and out.endswith("</prompt_prelude>")
+
+    def test_capabilities_block(self):
+        out = pp.compose_context("debug", "quiet", ["y"], ["skill:diagnose-hitl"])
+        assert "skill:diagnose-hitl" in out
+
+
+class TestMakeOutput:
+    def test_empty_passthrough(self):
+        assert pp.make_output("") == ""
+
+    def test_valid_contract(self):
+        raw = pp.make_output("<prompt_prelude>x</prompt_prelude>")
+        obj = _json.loads(raw)
+        assert obj["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
+        assert obj["hookSpecificOutput"]["additionalContext"] == "<prompt_prelude>x</prompt_prelude>"
