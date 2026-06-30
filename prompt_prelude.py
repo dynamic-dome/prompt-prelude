@@ -27,3 +27,31 @@ def should_skip(prompt):
     if len(s) < MIN_PROMPT_LEN or len(s.split()) < 4:
         return True, "too_short"
     return False, ""
+
+
+DOMAIN_HINTS = {
+    "ui-frontend":   ["ui", "css", "component", "layout", "responsive", "frontend", "button", "styling"],
+    "data-analysis": ["daten", "auswerten", "csv", "analyse", "chart", "viz", "dashboard", "tabelle"],
+    "workflow":      ["workflow", "loop", "orchestrier", "subagent", "pipeline", "cron", "agenten"],
+    "debug":         ["bug", "fehler", "crash", "traceback", "kaputt", "debug", "exception"],
+    "research":      ["recherchier", "finde heraus", "quellen", "notebooklm", "was ist"],
+    "code-impl":     ["funktion", "klasse", "methode", "refactor", "implementier", "skript"],
+}
+
+PLANNING_TRIGGERS = ["plane", "planung", "idee", "konzept", "wie könnte", "wie koennte",
+                     "brainstorm", "überleg", "ueberleg", "architektur", "entwurf", "ansatz", "design-spec"]
+
+
+def detect_domain(prompt):
+    """Erste matchende Domain in Dict-Reihenfolge, sonst None."""
+    low = prompt.lower()
+    for domain, kws in DOMAIN_HINTS.items():
+        if any(kw in low for kw in kws):
+            return domain
+    return None
+
+
+def detect_phase(prompt):
+    """Binär: planning, wenn ein Planungs-Trigger matcht; sonst quiet."""
+    low = prompt.lower()
+    return "planning" if any(t in low for t in PLANNING_TRIGGERS) else "quiet"

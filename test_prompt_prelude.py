@@ -20,3 +20,25 @@ class TestShouldSkip:
     def test_real_prompt_passes(self):
         skip, reason = pp.should_skip("Baue mir eine Tabelle aus den Verkaufsdaten als Chart")
         assert skip is False and reason == ""
+
+
+class TestDetectDomain:
+    def test_ui_prompt(self):
+        assert pp.detect_domain("mach das component layout responsive") == "ui-frontend"
+
+    def test_data_prompt(self):
+        assert pp.detect_domain("ich will die csv daten auswerten") == "data-analysis"
+
+    def test_debug_prompt(self):
+        assert pp.detect_domain("da ist ein bug im traceback") == "debug"
+
+    def test_no_domain(self):
+        assert pp.detect_domain("erzähl mir was über das wetter heute") is None
+
+
+class TestDetectPhase:
+    def test_planning_prompt(self):
+        assert pp.detect_phase("lass uns ein konzept für X planen") == "planning"
+
+    def test_quiet_prompt(self):
+        assert pp.detect_phase("fix den fehler in zeile 12") == "quiet"
