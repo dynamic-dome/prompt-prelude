@@ -1,6 +1,19 @@
 import sqlite3
 import pytest
 
+import prompt_prelude as _pp
+
+
+@pytest.fixture(autouse=True)
+def no_real_daemon(monkeypatch):
+    """Kein Test darf je den echten Atlas-Daemon (127.0.0.1:7801) treffen —
+    der läuft parallel evtl. (nicht) und würde die Suite nichtdeterministisch
+    machen. Default: Daemon 'down' (ConnectionError -> Fallback-Pfade).
+    Tests, die Daemon-Verhalten brauchen, injizieren ein explizites http_fn."""
+    def _refuse(url, body, timeout):
+        raise ConnectionError("no daemon in tests")
+    monkeypatch.setattr(_pp, "_http_post_json", _refuse)
+
 
 @pytest.fixture
 def tmp_state_dir(tmp_path):

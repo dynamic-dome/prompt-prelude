@@ -3,6 +3,7 @@
 stdlib-only. Fail-soft: Fehler -> kein Output. Exit immer 0.
 Opt-out: Prompt mit //raw prefixen."""
 import sys, os, json, re, time
+import urllib.request
 
 
 def _force_utf8(stream):
@@ -294,7 +295,215 @@ def query_atlas(terms, db_path, limit=3):
         return []
 
 
-def run(payload, *, atlas_root, state_dir, log_path, now):
+# ---------------------------------------------------------------------------
+# Semantisches Routing über den Atlas-HTTP-Daemon (fail-soft, stdlib-only).
+# Vertrag (eingefroren):
+#   GET  /health   -> {"status":"ok","run_id":...,"built_at":...,"model_loaded":bool}
+#   POST /classify {"query": str, "labels":[{"name","description"},...]}
+#                  -> {"scores":[{"name","score"},...]} absteigend (Cosine)
+#   POST /search   {"query": str, "k": int}
+#                  -> {"built_at":..., "results":[{record_id, source_path,
+#                      abs_path, snippet/heading, score},...]}
+# ---------------------------------------------------------------------------
+
+ATLAS_DAEMON_URL_DEFAULT = "http://127.0.0.1:7801"
+ATLAS_DAEMON_TIMEOUT_DEFAULT = 0.5   # Sekunden; klein, Hook hat 2s-Gesamtbudget
+DAEMON_BUDGET_S = 1.2                # Gesamt-Guard: alle Daemon-Calls eines Laufs zusammen
+CLASSIFY_PROMPT_CAP = 500            # Query-Kappung für /classify
+
+# Threshold-Politik (alle drei sind Kalibrierungs-Kandidaten, via eval_routing.py
+# gegen echte Prompts nachziehen). Kalibriert 2026-07-02 gegen die 20-Prompt-Eval:
+# 0.35 liess "build neu starten"->code-impl (0.360) und "guide für git" (0.373)
+# durch; 0.42 killt beide und behält die semantischen Gewinne (debug 0.466/0.520).
+TH_ACCEPT = 0.45  # Kalibrierungs-Kandidat: Mindest-Score des Bestplatzierten
+TH_MARGIN = 0.05  # Kalibrierungs-Kandidat: Mindestabstand zum Zweitplatzierten
+TH_CLEAR = 0.50   # Kalibrierungs-Kandidat: ab hier gilt der Score auch ohne Margin
+TH_ANCHOR_VETO = 0.12  # Null-Anker naeher als das am Sieger -> unsicher, ablehnen
+                       # (0.10 verfehlte den Kalibrier-Fall um 0.005: workflow 0.547,
+                       #  meta-none 0.442 auf Platz 3)
+
+# Anker-Beschreibungen fürs multilinguale Embedding-Modell. Gemischt DE/EN,
+# weil die User-Prompts gemischt sind. Bewusst unterscheidungsstark formuliert:
+# jede Domain nennt ihr typisches Vokabular UND typische Aufgabenformen.
+DOMAIN_DESCRIPTIONS = {
+    "ui-frontend":
+        "Benutzeroberflächen bauen und gestalten: Web-Frontend, HTML, CSS, Komponenten, "
+        "Layout, Buttons, Styling, responsive Design, das Aussehen einer Seite oder App. "
+        "Typical asks: build a UI, improve the interface, make it look modern, fix the layout.",
+    "data-analysis":
+        "Daten auswerten und visualisieren: CSV- oder JSON-Daten laden, aggregieren, "
+        "Statistiken berechnen, Charts und Diagramme erzeugen, Tabellen und Zahlen analysieren. "
+        "Typical asks: analyze this data, plot a chart, summarize the numbers, find trends.",
+    "workflow":
+        "Automatisierung und Agenten-Orchestrierung: Workflows, Pipelines, Cron-Jobs, Hooks, "
+        "Subagenten und Multi-Agent-Loops einrichten, verketten oder verbessern. "
+        "Typical asks: automate this process, orchestrate agents, schedule a recurring job.",
+    "debug":
+        "Fehler finden und beheben: Bugs, Crashes, Exceptions, Tracebacks, fehlschlagende "
+        "Tests, unerwartetes oder kaputtes Verhalten reproduzieren und diagnostizieren. "
+        "Typical asks: why does this fail, fix the error, the app crashes, tests are red.",
+    "research":
+        "Recherche und Wissensfragen: Informationen suchen, Quellen finden und vergleichen, "
+        "Konzepte erklären lassen, Dokumentation oder Web durchsuchen, Optionen bewerten. "
+        "Typical asks: find out how X works, what is Y, compare alternatives, gather sources.",
+    "code-impl":
+        "Code schreiben und umbauen: Funktionen, Klassen, Module oder Skripte implementieren, "
+        "Refactoring, APIs entwickeln, Tests schreiben — konkrete Umsetzung statt Analyse. "
+        "Typical asks: implement this function, write a script, refactor the module, add a feature.",
+}
+
+# Null-Anker gegen High-Score-False-Positives (Zero-Shot-Trick): diese Labels
+# werden mitklassifiziert, sind aber keine Domains — gewinnt einer, lehnt
+# pick_daemon_domain automatisch ab (Name nicht in DOMAIN_ROUTING) und der
+# Keyword-Fallback übernimmt. Kalibrier-Befund 2026-07-02: die Meta-Frage
+# "welche projekte liegen in meinem AI ordner" traf workflow mit 0.547 —
+# über jedem sinnvollen Threshold, nur ein Null-Anker fängt so etwas.
+NULL_ANCHORS = {
+    "meta-none":
+        "Meta-Fragen über den Workspace, Ordner und den Stand der Dinge: was liegt in welchem "
+        "Ordner oder Verzeichnis, welche Projekte oder Dateien gibt es, Inventar und Überblick, "
+        "was haben wir gemacht, weitermachen mit dem Plan, Status, Zusammenfassung, "
+        "allgemeine Unterhaltung ohne fachliches Thema. "
+        "Typical asks: what is in this folder, which projects exist, what did we do, continue.",
+}
+
+
+def _daemon_url():
+    return os.environ.get("ATLAS_DAEMON_URL", ATLAS_DAEMON_URL_DEFAULT).rstrip("/")
+
+
+def _daemon_timeout():
+    try:
+        return float(os.environ.get("ATLAS_DAEMON_TIMEOUT", ATLAS_DAEMON_TIMEOUT_DEFAULT))
+    except Exception:
+        return ATLAS_DAEMON_TIMEOUT_DEFAULT
+
+
+def _http_post_json(url, body, timeout):
+    """POST JSON, JSON zurück. Non-200 -> None. Wirft bei Netz-/Timeout-Fehlern
+    (Caller fängt). Reines stdlib-urllib, kein requests."""
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        if getattr(resp, "status", 200) != 200:
+            return None
+        return json.loads(resp.read().decode("utf-8"))
+
+
+class DaemonBudget:
+    """Gesamt-Zeitbudget für ALLE Daemon-Calls eines Hook-Laufs (~1.2s).
+    Ist das Budget verbraucht, werden weitere Daemon-Calls übersprungen
+    (Rückgabe None -> Caller fällt auf Keyword-/SQLite-Pfad zurück)."""
+
+    def __init__(self, budget_s=DAEMON_BUDGET_S):
+        self.budget_s = budget_s
+        self.spent_s = 0.0
+
+    def exhausted(self):
+        return self.spent_s >= self.budget_s
+
+    def call(self, fn, *args, **kwargs):
+        if self.exhausted():
+            return None
+        t0 = time.perf_counter()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            self.spent_s += time.perf_counter() - t0
+
+
+def classify_via_daemon(prompt, timeout=None, http_fn=None):
+    """POST /classify mit den 6 Domain-Labels.
+    -> [{"name","score"},...] absteigend, oder None bei JEDEM Fehler
+    (Timeout, Connection-Refused, Non-200, kaputtes JSON, Schema-Drift)."""
+    try:
+        fn = http_fn or _http_post_json
+        t = timeout if timeout is not None else _daemon_timeout()
+        body = {
+            "query": str(prompt)[:CLASSIFY_PROMPT_CAP],
+            "labels": [{"name": n, "description": d}
+                       for n, d in {**DOMAIN_DESCRIPTIONS, **NULL_ANCHORS}.items()],
+        }
+        data = fn(_daemon_url() + "/classify", body, t)
+        scores = [{"name": str(s["name"]), "score": float(s["score"])} for s in data["scores"]]
+        scores.sort(key=lambda s: -s["score"])
+        return scores or None
+    except Exception:
+        return None
+
+
+def pick_daemon_domain(scores):
+    """Threshold-Politik (simpel, dokumentiert): akzeptiere das Top-Label wenn
+    score >= TH_ACCEPT UND (Abstand zum Zweitplatzierten >= TH_MARGIN ODER
+    score >= TH_CLEAR, d.h. absolut eindeutig). Unbekannte Label-Namen werden
+    abgelehnt (Schutz gegen Daemon-Drift). Sonst None -> Keyword-Fallback."""
+    try:
+        if not scores:
+            return None
+        top = scores[0]
+        if top["name"] not in DOMAIN_ROUTING or top["score"] < TH_ACCEPT:
+            return None
+        # Anker-Veto: liegt ein Null-Anker nahe am Sieger, ist der Prompt
+        # meta-verdaechtig -> ablehnen (strenger als TH_MARGIN, Kalibrier-Befund:
+        # "welche projekte liegen in meinem AI ordner" -> workflow 0.547 vs
+        # meta-none 0.463 — nur dieses Veto faengt den Fall).
+        for s in scores[1:]:
+            if s["name"] in NULL_ANCHORS and s["score"] >= top["score"] - TH_ANCHOR_VETO:
+                return None
+        second = scores[1]["score"] if len(scores) > 1 else 0.0
+        if top["score"] - second >= TH_MARGIN or top["score"] >= TH_CLEAR:
+            return top["name"]
+        return None
+    except Exception:
+        return None
+
+
+def search_via_daemon(terms, k=3, timeout=None, http_fn=None):
+    """POST /search. -> results-Liste (evtl. leer) oder None bei JEDEM Fehler."""
+    try:
+        fn = http_fn or _http_post_json
+        t = timeout if timeout is not None else _daemon_timeout()
+        data = fn(_daemon_url() + "/search", {"query": str(terms), "k": int(k)}, t)
+        results = data["results"]
+        return results if isinstance(results, list) else None
+    except Exception:
+        return None
+
+
+def format_cap_hint(result):
+    """Kompakter Hint aus einem /search-Result: 'record_id — Titel' wenn heading/
+    snippet vorhanden (informativer als nackte record_id), hart gekappt —
+    Injektions-Budget! Fail-soft: kaputtes Result -> ''."""
+    try:
+        rid = str(result.get("record_id", "") or "").strip()
+        title = " ".join(str(result.get("heading") or result.get("snippet") or "").split()).strip()
+        if title and rid and title.lower() != rid.lower():
+            return f"{rid} — {title[:60]}"
+        return rid or title[:60]
+    except Exception:
+        return ""
+
+
+def lookup_capabilities(terms, atlas_root, budget, http_fn=None, limit=3, daemon_ok=True):
+    """Caps-Lookup-Kaskade: Daemon /search zuerst, bei Fehler/Budget-Skip
+    Fallback auf den direkten SQLite/FTS5-Pfad. -> (hints, caps_source).
+    daemon_ok=False (z.B. classify schlug schon fehl -> Daemon gilt für diesen
+    Lauf als down) skippt den /search-Versuch komplett: Windows brennt für
+    connection-refused auf localhost den VOLLEN Timeout ab (~0.5s gemessen),
+    ein zweiter toter Call wäre reine Latenz-Verschwendung."""
+    results = budget.call(search_via_daemon, terms, limit, http_fn=http_fn) if daemon_ok else None
+    if results is not None:
+        hints = [h for h in (format_cap_hint(r) for r in results[:limit]) if h]
+        return hints, ("daemon" if hints else "none")
+    caps = query_atlas(terms, find_atlas_db(atlas_root), limit)
+    return caps, ("sqlite" if caps else "none")
+
+
+def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=None):
     if not isinstance(payload, dict):
         return ""
     prompt = payload.get("prompt", "") or ""
@@ -307,13 +516,38 @@ def run(payload, *, atlas_root, state_dir, log_path, now):
                        "prompt_preview": preview}, log_path)
         return ""
 
-    domain, dom_hits = match_domain(prompt)
+    budget = budget or DaemonBudget()
+
+    # Routing-Kaskade: (a) Daemon-Klassifikation, (b) Keyword-Fallback.
+    # Beide Ergebnisse werden IMMER geloggt (A/B-Vergleich zur Kalibrierung).
+    spent_before = budget.spent_s
+    daemon_scores = budget.call(classify_via_daemon, prompt, http_fn=http_fn)
+    daemon_latency_ms = round((budget.spent_s - spent_before) * 1000, 1)
+    daemon_domain = pick_daemon_domain(daemon_scores)
+    keyword_domain, dom_hits = match_domain(prompt)
+
+    if daemon_domain:
+        domain, routing_source = daemon_domain, "daemon"
+    elif keyword_domain:
+        domain, routing_source = keyword_domain, "keywords"
+    else:
+        domain, routing_source = None, "none"
+
+    ab = {  # A/B-Telemetrie: hängt an JEDEM post-classify Event
+        "routing_source": routing_source,
+        "daemon_top": [{"name": s["name"], "score": round(s["score"], 3)}
+                       for s in (daemon_scores or [])[:3]],
+        "keyword_domain": keyword_domain,
+        "daemon_latency_ms": daemon_latency_ms,
+    }
+
+    # Phase-Erkennung bleibt bewusst Keyword-basiert (nicht Daemon).
     phase, phase_hits = match_phase(prompt)
     routing = build_rag_routing(domain, phase)
 
     if not routing:
         log_telemetry({"t": now, "skip": "no_routing", "session": session_id,
-                       "prompt_preview": preview}, log_path)
+                       "prompt_preview": preview, **ab}, log_path)
         return ""
 
     cleanup_state(state_dir, now)
@@ -326,10 +560,12 @@ def run(payload, *, atlas_root, state_dir, log_path, now):
             rearmed = True  # expliziter RAG-Bezug schlägt Dedupe
         else:
             log_telemetry({"t": now, "skip": "deduped", "key": key, "session": session_id,
-                           "prompt_preview": preview}, log_path)
+                           "prompt_preview": preview, **ab}, log_path)
             return ""
 
-    caps = query_atlas(extract_query(prompt), find_atlas_db(atlas_root))
+    caps, caps_source = lookup_capabilities(extract_query(prompt), atlas_root,
+                                            budget, http_fn=http_fn,
+                                            daemon_ok=daemon_scores is not None)
     ctx = compose_context(domain, phase, routing, caps)
     out = make_output(ctx)
 
@@ -338,9 +574,10 @@ def run(payload, *, atlas_root, state_dir, log_path, now):
         save_fired(session_id, state_dir, fired)
         log_telemetry({"t": now, "fired": True, "domain": domain, "phase": phase,
                        "key": key, "caps": caps, "caps_count": len(caps),
+                       "caps_source": caps_source,
                        "rearmed": rearmed, "prompt_preview": preview,
                        "matched_keywords": dom_hits + phase_hits,
-                       "session": session_id}, log_path)
+                       "session": session_id, **ab}, log_path)
     return out
 
 

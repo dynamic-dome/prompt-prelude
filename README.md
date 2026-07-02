@@ -27,6 +27,50 @@ wieder entfernen.
 - **HARD-Regeln (§3 Test-DB-Isolation etc.)** liegen bewusst NICHT hier, sondern im
   PreToolUse-Block-Hook (enforcing), nicht in diesem advisory-Kanal.
 
+## Semantisches Routing (Atlas-Daemon)
+Die Domain-Erkennung ist eine **Kaskade**, keyword-Matching bleibt vollständig erhalten:
+
+1. **Daemon-Klassifikation:** `POST /classify` an den Atlas-HTTP-Daemon
+   (Embedding-Cosine gegen die 6 `DOMAIN_DESCRIPTIONS`-Anker plus die
+   `NULL_ANCHORS`, Prompt auf 500 Zeichen gekappt). Akzeptiert nur bei
+   `score >= TH_ACCEPT` (0.45, kalibriert 2026-07-02 via eval_routing.py) **und**
+   (Margin zum Zweitplatzierten `>= TH_MARGIN` (0.05) **oder** `score >= TH_CLEAR`
+   (0.50)). Unbekannte Label-Namen werden abgelehnt. **Null-Anker:** gewinnt der
+   "meta-none"-Anker oder liegt er naeher als `TH_ANCHOR_VETO` (0.12) am Sieger
+   (alle Plaetze werden gescannt), gilt der Prompt als meta/unsicher -> Fallback.
+2. **Keyword-Fallback:** bei Daemon-Fehler/Timeout/Non-200/Threshold-Ablehnung
+   greift das bestehende Wortgrenzen-Matching (`DOMAIN_HINTS`) unverändert.
+3. **Phase (planning/quiet)** bleibt bewusst rein Keyword-basiert.
+
+Der **Caps-Lookup** kaskadiert analog: `POST /search` zuerst (Hints werden mit
+`heading`/`snippet` informativer: `record_id — Titel`, 60-Zeichen-Cap), bei
+Fehler Fallback auf den direkten SQLite/FTS5-Pfad. Schlug schon `/classify`
+fehl, gilt der Daemon für diesen Lauf als down und `/search` wird gar nicht
+erst versucht (Windows brennt für connection-refused auf localhost den vollen
+Timeout ab, gemessen ~0.5s pro totem Call).
+
+**Budget-Guard:** alle Daemon-Calls eines Laufs teilen sich ~1.2s
+(`DAEMON_BUDGET_S`); ist das Budget verbraucht, werden weitere Daemon-Calls
+geskippt und die Fallbacks greifen. Jeder einzelne Call hat einen kleinen
+Timeout (Default 0.5s). Der Hook blockiert nie.
+
+**Env-Vars:**
+- `ATLAS_DAEMON_URL` — Daemon-Basis-URL (Default `http://127.0.0.1:7801`)
+- `ATLAS_DAEMON_TIMEOUT` — Timeout pro Call in Sekunden (Default `0.5`)
+
+**A/B-Telemetrie:** Daemon- UND Keyword-Ergebnis werden immer geloggt
+(`routing_source` = `daemon|keywords|none`, `daemon_top` = Top-3 name+score,
+`keyword_domain`, `daemon_latency_ms`, `caps_source` = `daemon|sqlite|none`).
+
+**Kalibrierung:** `python eval_routing.py` läuft manuell gegen den echten
+Daemon (~20 eingebettete DE/EN-Prompts inkl. bekannter Fehlklassifikations-Fälle)
+und stellt daemon- vs. keyword-Domain als Tabelle gegenüber. Die drei
+Thresholds (`TH_ACCEPT`, `TH_MARGIN`, `TH_CLEAR`, `TH_ANCHOR_VETO`) sind
+Kalibrierungs-Kandidaten — nach Datenlage nachziehen, zusätzlich
+`prompt_prelude.jsonl` auswerten. Stand 2026-07-02: 18/20 Eval-Prompts korrekt,
+0 False-Positives; die 2 Restfehler sind englische Prompts, bei denen beide
+Schichten blind sind (cross-linguale MiniLM-Schwaeche).
+
 ## Telemetrie
 `prompt_prelude.jsonl` (gitignored, bleibt lokal): pro Prompt ein Event mit
 skip-Grund ODER `fired`-Routing. Auditierbare Felder pro Event:

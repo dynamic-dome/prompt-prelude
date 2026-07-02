@@ -378,6 +378,279 @@ class TestMain:
         assert capsys.readouterr().out == ""
 
 
+# ---------------------------------------------------------------------------
+# H2: Semantisches Routing über den Atlas-Daemon (gemockt via injizierbarem
+# http_fn — kein Test trifft je den echten Daemon, s. conftest no_real_daemon).
+# ---------------------------------------------------------------------------
+
+def _scores(*pairs):
+    return {"scores": [{"name": n, "score": s} for n, s in pairs]}
+
+
+def _mk_http(classify=None, search=None, calls=None):
+    """Fake-http_fn: routet nach URL-Suffix. None für einen Endpoint -> ConnectionError.
+    Ein Wert kann auch eine Exception-INSTANZ sein -> wird geworfen."""
+    def fn(url, body, timeout):
+        if calls is not None:
+            calls.append(url)
+        resp = classify if url.endswith("/classify") else search
+        if isinstance(resp, Exception):
+            raise resp
+        if resp is None and not url.endswith("/search"):
+            raise ConnectionError("classify down")
+        if resp is None and url.endswith("/search"):
+            raise ConnectionError("search down")
+        return resp
+    return fn
+
+
+# Prompt OHNE Keyword-Treffer (weder Domain noch Planning) — nur der Daemon
+# kann ihn routen. Lang genug für should_skip.
+NO_KEYWORD_PROMPT = "mach die seite bitte etwas schöner und deutlich moderner insgesamt"
+# Prompt MIT eindeutigen ui-frontend-Keywords für Fallback-Tests.
+KEYWORD_UI_PROMPT = "baue ein responsive component layout für den header"
+
+
+class TestClassifyViaDaemon:
+    def test_success_sorted_desc(self):
+        fn = _mk_http(classify=_scores(("debug", 0.2), ("ui-frontend", 0.7)))
+        out = pp.classify_via_daemon("x", http_fn=fn)
+        assert [s["name"] for s in out] == ["ui-frontend", "debug"]
+
+    def test_timeout_returns_none(self):
+        fn = _mk_http(classify=TimeoutError("slow"))
+        assert pp.classify_via_daemon("x", http_fn=fn) is None
+
+    def test_non200_returns_none(self):
+        # _http_post_json liefert None bei Non-200 -> classify muss None geben
+        fn = _mk_http(classify={"scores": None})
+        assert pp.classify_via_daemon("x", http_fn=lambda u, b, t: None) is None
+        assert pp.classify_via_daemon("x", http_fn=fn) is None  # Schema-Drift ebenso
+
+    def test_prompt_capped_to_500(self):
+        seen = {}
+        def fn(url, body, timeout):
+            seen.update(body)
+            return _scores(("debug", 0.9))
+        pp.classify_via_daemon("x" * 2000, http_fn=fn)
+        assert len(seen["query"]) == 500
+        # 6 Domains + Null-Anker (Kalibrier-Befund: High-Score-FP auf Meta-Fragen)
+        assert len(seen["labels"]) == 6 + len(pp.NULL_ANCHORS)
+        known = {**pp.DOMAIN_DESCRIPTIONS, **pp.NULL_ANCHORS}
+        assert all(l["name"] in known for l in seen["labels"])
+
+
+class TestPickDaemonDomain:
+    def test_clear_winner_accepted(self):
+        assert pp.pick_daemon_domain([{"name": "debug", "score": 0.62},
+                                      {"name": "code-impl", "score": 0.40}]) == "debug"
+
+    def test_below_accept_rejected(self):
+        assert pp.pick_daemon_domain([{"name": "debug", "score": 0.30},
+                                      {"name": "code-impl", "score": 0.10}]) is None
+
+    def test_narrow_margin_below_clear_rejected(self):
+        # 0.40 vs 0.38: Margin < TH_MARGIN und Score < TH_CLEAR -> ablehnen
+        assert pp.pick_daemon_domain([{"name": "debug", "score": 0.40},
+                                      {"name": "code-impl", "score": 0.38}]) is None
+
+    def test_narrow_margin_but_clear_accepted(self):
+        # >= TH_CLEAR gewinnt auch bei knappem Abstand
+        assert pp.pick_daemon_domain([{"name": "debug", "score": 0.55},
+                                      {"name": "code-impl", "score": 0.53}]) == "debug"
+
+    def test_unknown_label_rejected(self):
+        assert pp.pick_daemon_domain([{"name": "totally-new", "score": 0.9}]) is None
+
+    def test_null_anchor_win_rejected(self):
+        # Gewinnt der Meta-Null-Anker, ist das KEINE Domain -> Keyword-Fallback
+        assert pp.pick_daemon_domain([{"name": "meta-none", "score": 0.61},
+                                      {"name": "workflow", "score": 0.55}]) is None
+
+    def test_null_anchor_close_second_vetoes(self):
+        assert pp.pick_daemon_domain([{"name": "workflow", "score": 0.60},
+                                      {"name": "meta-none", "score": 0.52}]) is None
+
+    def test_null_anchor_close_third_vetoes(self):
+        # Echter Kalibrier-Fall ("welche projekte liegen in meinem AI ordner"):
+        # der Anker steht auf Platz 3 — das Veto muss ALLE Plätze scannen.
+        assert pp.pick_daemon_domain([{"name": "workflow", "score": 0.547},
+                                      {"name": "code-impl", "score": 0.463},
+                                      {"name": "meta-none", "score": 0.442}]) is None
+
+    def test_null_anchor_distant_second_no_veto(self):
+        assert pp.pick_daemon_domain([{"name": "debug", "score": 0.62},
+                                      {"name": "meta-none", "score": 0.40}]) == "debug"
+
+    def test_none_and_empty(self):
+        assert pp.pick_daemon_domain(None) is None
+        assert pp.pick_daemon_domain([]) is None
+
+
+class TestFormatCapHint:
+    def test_with_heading(self):
+        r = {"record_id": "skill:frontend-design", "heading": "Frontend  Design\nGuide"}
+        assert pp.format_cap_hint(r) == "skill:frontend-design — Frontend Design Guide"
+
+    def test_record_id_only(self):
+        assert pp.format_cap_hint({"record_id": "skill:x"}) == "skill:x"
+
+    def test_snippet_fallback_and_cap(self):
+        r = {"record_id": "r1", "snippet": "s" * 200}
+        out = pp.format_cap_hint(r)
+        assert out.startswith("r1 — ") and len(out) <= len("r1 — ") + 60
+
+    def test_broken_input(self):
+        assert pp.format_cap_hint(None) == ""
+
+
+class TestDaemonBudget:
+    def test_exhausted_skips_call(self):
+        b = pp.DaemonBudget(budget_s=0.0)
+        called = []
+        assert b.call(lambda: called.append(1) or "x") is None
+        assert called == []
+
+    def test_spent_accumulates_and_exhausts(self):
+        b = pp.DaemonBudget(budget_s=0.001)
+        import time as _t
+        b.call(lambda: _t.sleep(0.002))
+        assert b.exhausted()
+        assert b.call(lambda: "never") is None
+
+
+class TestRunSemanticRouting:
+    def _kw(self, tmp_path):
+        return dict(atlas_root="x", state_dir=str(tmp_path / "st"),
+                    log_path=str(tmp_path / "l"), now=1.0)
+
+    def _last_event(self, tmp_path):
+        return _json.loads((tmp_path / "l").read_text(encoding="utf-8").strip().splitlines()[-1])
+
+    def test_daemon_routes_prompt_without_keywords(self, tmp_path):
+        fn = _mk_http(classify=_scores(("ui-frontend", 0.62), ("debug", 0.20)),
+                      search={"results": []})
+        out = pp.run({"prompt": NO_KEYWORD_PROMPT, "session_id": "s"},
+                     http_fn=fn, **self._kw(tmp_path))
+        assert "ui-frontend" in out
+        ev = self._last_event(tmp_path)
+        assert ev["routing_source"] == "daemon"
+        assert ev["keyword_domain"] is None
+        assert ev["daemon_top"][0] == {"name": "ui-frontend", "score": 0.62}
+
+    def test_timeout_falls_back_to_keywords(self, tmp_path, monkeypatch, fake_atlas_db):
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
+        fn = _mk_http(classify=TimeoutError("slow"), search=TimeoutError("slow"))
+        out = pp.run({"prompt": KEYWORD_UI_PROMPT, "session_id": "s"},
+                     http_fn=fn, **self._kw(tmp_path))
+        assert "ui-frontend" in out
+        ev = self._last_event(tmp_path)
+        assert ev["routing_source"] == "keywords"
+        assert ev["daemon_top"] == []
+
+    def test_non200_falls_back_to_keywords(self, tmp_path, monkeypatch, fake_atlas_db):
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
+        out = pp.run({"prompt": KEYWORD_UI_PROMPT, "session_id": "s"},
+                     http_fn=lambda u, b, t: None, **self._kw(tmp_path))
+        assert "ui-frontend" in out
+        assert self._last_event(tmp_path)["routing_source"] == "keywords"
+
+    def test_threshold_rejection_falls_back(self, tmp_path, monkeypatch, fake_atlas_db):
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
+        # Daemon antwortet, aber unter TH_ACCEPT -> Keyword-Fallback,
+        # daemon_top bleibt trotzdem im Log (A/B-Vergleich)
+        fn = _mk_http(classify=_scores(("research", 0.22), ("debug", 0.21)),
+                      search={"results": []})
+        out = pp.run({"prompt": KEYWORD_UI_PROMPT, "session_id": "s"},
+                     http_fn=fn, **self._kw(tmp_path))
+        assert "ui-frontend" in out
+        ev = self._last_event(tmp_path)
+        assert ev["routing_source"] == "keywords"
+        assert ev["daemon_top"][0]["name"] == "research"
+
+    def test_no_routing_event_carries_ab_fields(self, tmp_path):
+        # weder Daemon (down) noch Keywords -> no_routing, aber A/B-Felder da
+        pp.run({"prompt": "erzähl mir bitte was über das wetter morgen früh", "session_id": "s"},
+               http_fn=_mk_http(), **self._kw(tmp_path))
+        ev = self._last_event(tmp_path)
+        assert ev["skip"] == "no_routing"
+        assert ev["routing_source"] == "none"
+        assert ev["keyword_domain"] is None and ev["daemon_top"] == []
+
+    def test_fired_telemetry_has_all_new_fields(self, tmp_path):
+        fn = _mk_http(classify=_scores(("ui-frontend", 0.62)),
+                      search={"results": [{"record_id": "skill:frontend-design",
+                                           "heading": "Frontend Design", "score": 0.8}]})
+        assert pp.run({"prompt": NO_KEYWORD_PROMPT, "session_id": "s"},
+                      http_fn=fn, **self._kw(tmp_path)) != ""
+        ev = self._last_event(tmp_path)
+        for field in ("routing_source", "daemon_top", "keyword_domain",
+                      "daemon_latency_ms", "caps_source"):
+            assert field in ev, field
+        assert isinstance(ev["daemon_latency_ms"], float)
+
+    def test_caps_via_daemon_with_heading(self, tmp_path):
+        fn = _mk_http(classify=_scores(("ui-frontend", 0.62)),
+                      search={"results": [{"record_id": "skill:frontend-design",
+                                           "heading": "Frontend Design Guide",
+                                           "source_path": "y.md", "score": 0.8}]})
+        out = pp.run({"prompt": NO_KEYWORD_PROMPT, "session_id": "s"},
+                     http_fn=fn, **self._kw(tmp_path))
+        assert "skill:frontend-design — Frontend Design Guide" in out
+        ev = self._last_event(tmp_path)
+        assert ev["caps_source"] == "daemon"
+        assert ev["caps"] == ["skill:frontend-design — Frontend Design Guide"]
+
+    def test_caps_daemon_error_falls_back_to_sqlite(self, tmp_path, monkeypatch, fake_atlas_db):
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
+        fn = _mk_http(classify=_scores(("ui-frontend", 0.62)), search=ConnectionError("down"))
+        out = pp.run({"prompt": KEYWORD_UI_PROMPT, "session_id": "s"},
+                     http_fn=fn, **self._kw(tmp_path))
+        ev = self._last_event(tmp_path)
+        assert ev["caps_source"] == "sqlite"
+        assert "skill:frontend-design" in out
+
+    def test_budget_guard_skips_all_daemon_calls(self, tmp_path, monkeypatch, fake_atlas_db):
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
+        calls = []
+        fn = _mk_http(classify=_scores(("debug", 0.9)), search={"results": []}, calls=calls)
+        out = pp.run({"prompt": KEYWORD_UI_PROMPT, "session_id": "s"},
+                     http_fn=fn, budget=pp.DaemonBudget(budget_s=0.0), **self._kw(tmp_path))
+        assert calls == []                      # Budget erschöpft: kein einziger Daemon-Call
+        assert "ui-frontend" in out             # Keyword-Fallback trägt
+        ev = self._last_event(tmp_path)
+        assert ev["routing_source"] == "keywords" and ev["caps_source"] == "sqlite"
+
+    def test_classify_down_skips_search_entirely(self, tmp_path, monkeypatch, fake_atlas_db):
+        # Windows-Befund: connection-refused auf localhost kostet den VOLLEN
+        # Timeout. classify-Fehler => Daemon gilt als down => kein /search-Call.
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
+        calls = []
+        fn = _mk_http(classify=ConnectionError("down"), search={"results": []}, calls=calls)
+        out = pp.run({"prompt": KEYWORD_UI_PROMPT, "session_id": "s"},
+                     http_fn=fn, **self._kw(tmp_path))
+        assert [u for u in calls if u.endswith("/classify")]
+        assert not [u for u in calls if u.endswith("/search")]
+        ev = self._last_event(tmp_path)
+        assert ev["routing_source"] == "keywords" and ev["caps_source"] == "sqlite"
+        assert "ui-frontend" in out
+
+    def test_budget_exhausted_by_classify_skips_search(self, tmp_path, monkeypatch, fake_atlas_db):
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
+        calls = []
+        def slow_classify(url, body, timeout):
+            calls.append(url)
+            import time as _t
+            _t.sleep(0.002)
+            return _scores(("ui-frontend", 0.62))
+        out = pp.run({"prompt": NO_KEYWORD_PROMPT, "session_id": "s"}, http_fn=slow_classify,
+                     budget=pp.DaemonBudget(budget_s=0.001), **self._kw(tmp_path))
+        assert [u for u in calls if u.endswith("/classify")]      # classify lief noch
+        assert not [u for u in calls if u.endswith("/search")]    # search geskippt
+        assert self._last_event(tmp_path)["caps_source"] in ("sqlite", "none")
+        assert "ui-frontend" in out
+
+
 class TestSessionSanitize:
     def test_no_path_traversal(self, tmp_path):
         state = tmp_path / "st"
