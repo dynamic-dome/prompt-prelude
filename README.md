@@ -81,6 +81,16 @@ skip-Grund ODER `fired`-Routing. Auditierbare Felder pro Event:
 - `skip: "crash"` + `error` (best-effort) wenn `run()` wirft.
 Auswerten, um tote Routings und Domänen-Lücken zu finden.
 
+**Compliance-Beweis (H4):** `python eval_compliance.py` joint die Telemetrie
+mit den tool-usage-tracker-Events (`../tool-usage-tracker/data/events*.jsonl`):
+folgt auf ein `fired`-Event tatsächlich ein Atlas-Read-Call derselben Session
+im 15-Min-Fenster (Konsum-Join, ein Call zählt für höchstens ein Event)?
+Plus Skip-Baseline (Calls trotz unterdrückter Prelude). Ersetzt die
+ECHO-Quittung durch Ground-Truth. **Erstbefund 2026-07-02: 1/26 fired-Events
+befolgt (4 %), Skip-Baseline 3 % — der Hinweis ändert das Agent-Verhalten
+bisher praktisch nicht.** Kandidaten: Prelude-Wording schärfen (imperativer),
+Fenster/Attribution prüfen, nach H1-Telemetriewoche neu messen.
+
 ## Housekeeping
 `.dedupe/`-Dateien älter als 7 Tage werden bei jedem Lauf fail-soft gelöscht.
 
