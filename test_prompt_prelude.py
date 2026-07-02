@@ -37,6 +37,34 @@ class TestShouldSkip:
     def test_raw_with_leading_space(self):
         assert pp.should_skip("   //raw genau das jetzt bitte tun") == (True, "raw")
 
+    # --- Iteration 1: maschinell generierte Prompts (Subagent-Callbacks etc.) skippen.
+    # Live-Befund 2026-07-02: <task-notification>-Prompts dominierten fired-Events
+    # mehrerer Sessions und produzierten Fehl-Routings (ui-frontend auf Telemetrie-Reports).
+    def test_task_notification_skips(self):
+        p = ("<task-notification>\n<task-id>abc123</task-id>\n<status>completed</status>\n"
+             "<summary>Agent finished with many words in the summary line</summary>\n"
+             "</task-notification>")
+        assert pp.should_skip(p) == (True, "machine_prompt")
+
+    def test_system_reminder_skips(self):
+        p = "<system-reminder>\nirgendein injizierter kontext mit vielen wörtern drin\n</system-reminder>"
+        assert pp.should_skip(p) == (True, "machine_prompt")
+
+    def test_all_machine_markers_skip(self):
+        # Codex-Verifier-Finding: alle 4 Marker abdecken, nicht nur 2
+        for marker in pp.MACHINE_PROMPT_MARKERS:
+            p = f"{marker}\nirgendein harness-generierter inhalt mit vielen wörtern\n"
+            assert pp.should_skip(p) == (True, "machine_prompt"), marker
+
+    def test_machine_marker_case_insensitive_with_leading_space(self):
+        p = "   <TASK-NOTIFICATION>\n<task-id>x</task-id>\nviele wörter hier drin\n</TASK-NOTIFICATION>"
+        assert pp.should_skip(p) == (True, "machine_prompt")
+
+    def test_xml_in_user_text_is_not_machine(self):
+        # User-Text, der zufällig Tags ENTHÄLT (nicht damit beginnt), bleibt normal
+        skip, reason = pp.should_skip("kannst du erklären was <div> im html layout macht")
+        assert reason != "machine_prompt"
+
 
 class TestDetectDomain:
     def test_ui_prompt(self):
@@ -82,6 +110,19 @@ class TestDetectDomain:
 
     def test_match_domain_no_hits(self):
         assert pp.match_domain("erzähl mir vom wetter heute") == (None, [])
+
+    # --- Iteration 1: Agent-Tooling-Vokabular (Hooks/Skills/MCP) routet nach workflow.
+    # Live-Befund: Meta-Arbeit an Hooks/Skills lief als no_routing oder Fehl-Routing.
+    def test_agent_tooling_keywords_route_to_workflow(self):
+        assert pp.detect_domain("der hook feuert bei mir nicht wie erwartet") == "workflow"
+        assert pp.detect_domain("bau mir dafür einen neuen mcp server") == "workflow"
+        assert pp.detect_domain("welcher skill passt zu dieser aufgabe am besten") == "workflow"
+
+    # --- Codex-Verifier-Finding: Debug-Signale müssen Agent-Tooling-Wörter schlagen.
+    # "Debugge einen React Hook: useEffect wirft Exception" darf nicht workflow werden.
+    def test_debug_beats_agent_tooling_keywords(self):
+        assert pp.detect_domain("debugge einen react hook: useEffect wirft eine exception") == "debug"
+        assert pp.detect_domain("der hook crasht mit einem traceback") == "debug"
 
 
 class TestDetectPhase:
@@ -151,6 +192,28 @@ class TestComposeContext:
         out = pp.compose_context("debug", "quiet", ["y"], ["skill:diagnose-hitl"])
         assert "skill:diagnose-hitl" in out
 
+    # --- Iteration 1 (H1): Wording ohne Selbst-Entwertung. H4-Befund: 3% Compliance
+    # vs. 2% Skip-Baseline — "kein Befehl"/"optional" gaben dem Modell explizit
+    # die Erlaubnis wegzuschauen.
+    def test_no_self_devaluation_wording(self):
+        out = pp.compose_context("debug", "quiet", ["y"], ["skill:diagnose-hitl"])
+        assert "kein Befehl" not in out
+        assert "optional" not in out.lower()
+        assert "MÖGLICHERWEISE" not in out
+
+    def test_caps_presented_as_executed_search(self):
+        # Treffer sind vorgezogenes Suchergebnis (lesen statt selbst suchen)
+        out = pp.compose_context("debug", "quiet", ["y"], ["skill:diagnose-hitl"])
+        assert "bereits ausgeführt" in out
+
+    def test_query_renders_ready_search_call(self):
+        out = pp.compose_context("debug", "quiet", ["y"], ["skill:x"], query="debug traceback parser")
+        assert 'memory_search_tool("debug traceback parser")' in out
+
+    def test_no_query_no_search_call_line(self):
+        out = pp.compose_context("debug", "quiet", ["y"], ["skill:x"])
+        assert "memory_search_tool(" not in out
+
 
 class TestMakeOutput:
     def test_empty_passthrough(self):
@@ -200,6 +263,15 @@ class TestTelemetry:
 
     def test_failsoft_bad_path(self):
         pp.log_telemetry({"a": 1}, "Z:/does/not/exist/t.jsonl")  # darf nicht werfen
+
+    # --- Iteration 1: Schema-Version an jedem Event (Alt-Events ohne routing_source
+    # verzerrten die A/B-Auswertung; ab jetzt ist der Schema-Stand explizit).
+    def test_schema_version_stamped(self, tmp_state_dir):
+        import os
+        log = os.path.join(tmp_state_dir, "t.jsonl")
+        pp.log_telemetry({"a": 1}, log)
+        ev = _json.loads(open(log, encoding="utf-8").read().strip())
+        assert ev["v"] == pp.TELEMETRY_SCHEMA_VERSION == 2
 
 
 class TestExtractQuery:
@@ -311,6 +383,26 @@ class TestRun:
         assert set(ev["matched_keywords"]) >= {"component", "layout", "responsive"}
         assert ev["caps_count"] == len(ev["caps"]) and ev["caps_count"] >= 1
         assert ev["rearmed"] is False
+
+    # --- Iteration 1: machine_prompt-Skip auf run()-Ebene inkl. Telemetrie-Grund ---
+    def test_machine_prompt_skips_with_reason(self, tmp_path):
+        log = tmp_path / "l"
+        p = ("<task-notification>\n<task-id>x</task-id>\n"
+             "<summary>Agent finished analyzing the telemetry data files</summary>\n"
+             "</task-notification>")
+        out = pp.run({"prompt": p, "session_id": "s"},
+                     atlas_root="x", state_dir=str(tmp_path / "st"), log_path=str(log), now=1.0)
+        assert out == ""
+        ev = _json.loads(log.read_text(encoding="utf-8").strip().splitlines()[-1])
+        assert ev["skip"] == "machine_prompt"
+
+    # --- Iteration 1: fired-Kontext enthält fertige memory_search_tool-Query ---
+    def test_fired_context_contains_ready_query(self, tmp_path, monkeypatch, fake_atlas_db):
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
+        out = pp.run({"prompt": "baue ein responsive component layout für den header", "session_id": "s"},
+                     atlas_root="x", state_dir=str(tmp_path / "st"), log_path=str(tmp_path / "l"), now=1.0)
+        ctx = _json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        assert 'memory_search_tool("' in ctx
 
     def test_skip_event_has_prompt_preview(self, tmp_path):
         log = tmp_path / "l"

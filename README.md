@@ -8,6 +8,12 @@ mit sichtbarer `↳ prelude`-Quittung, Telemetrie (`prompt_prelude.jsonl`) und S
 - **Still bei:** trivialen/kurzen Prompts, ohne erkannte Domain/Planung, oder wenn
   `domain:phase` in dieser Session schon geroutet wurde (Dedupe). Der Key ist
   bewusst `domain+phase`: quiet→planning derselben Domain feuert erneut.
+- **Maschinen-Prompts:** beginnt der Prompt mit `<task-notification>`,
+  `<system-reminder>`, `<local-command-stdout>` oder `<command-name>`
+  (harness-generiert, kein User-Intent), wird mit `skip: "machine_prompt"`
+  übersprungen. Live-Befund 2026-07-02: Subagent-Callbacks produzierten
+  Fehl-Routings (ui-frontend auf Telemetrie-Reports) und verzerrten die
+  H4-Compliance-Messung.
 - **Re-Arm:** Prompts mit explizitem RAG-/Skill-Bezug ("welche skills",
   "memory_search", "capability", "fähigkeiten", …) feuern trotz Dedupe erneut.
 - **Keyword-Matching:** Wortgrenzen (`\b`), kein Substring — `ui` matcht nicht mehr
@@ -24,6 +30,15 @@ wieder entfernen.
 ## Mechanismus
 - **M2 (Kern):** domänen-gezielte RAG-Aufträge an Claude (`build_rag_routing`).
 - **BM25 (optional, fail-soft):** Treffer-Hinweise aus dem lokalen Atlas-Index.
+- **Wording (H1, seit 2026-07-02 abend):** keine Selbst-Entwertung mehr — die
+  früheren Labels "weicher Hinweis, kein Befehl" und "optional" gaben dem Modell
+  explizite Erlaubnis wegzuschauen (H4: 3-4 % Compliance ≈ Baseline). Jetzt:
+  imperativer Auftrag ("vor dem ersten Arbeitsschritt erledigen"), Caps als
+  **vorgezogenes Suchergebnis** ("bereits ausgeführt — prüfe diese Treffer
+  zuerst": lesen statt selbst suchen) plus fertige
+  `memory_search_tool("<query>")`-Zeile zum Vertiefen. Der Funnel (Dedupe,
+  Phasen, Skips) deckelt die Frequenz weiterhin — Cry-Wolf-Schutz liegt dort,
+  nicht in der Wortwahl.
 - **HARD-Regeln (§3 Test-DB-Isolation etc.)** liegen bewusst NICHT hier, sondern im
   PreToolUse-Block-Hook (enforcing), nicht in diesem advisory-Kanal.
 
@@ -74,9 +89,12 @@ Schichten blind sind (cross-linguale MiniLM-Schwaeche).
 ## Telemetrie
 `prompt_prelude.jsonl` (gitignored, bleibt lokal): pro Prompt ein Event mit
 skip-Grund ODER `fired`-Routing. Auditierbare Felder pro Event:
+- `v` (Schema-Version, aktuell 2): Events ohne `v` sind Alt-Schema (v1, vor
+  Iteration 1) — in A/B-Auswertungen nicht mit v2 mischen (anderes Wording!),
 - `prompt_preview` (erste 80 Zeichen) auf allen Events,
 - bei `fired`: `matched_keywords` (Domain- + Planning-Treffer), `caps`,
   `caps_count` (0 = toter BM25-Lookup, fällt sofort auf), `rearmed`,
+  `query` (die in den Kontext eingebettete memory_search-Query),
 - `skip: "bad_stdin"` bei abgeschnittenem/invalidem stdin-JSON,
 - `skip: "crash"` + `error` (best-effort) wenn `run()` wirft.
 Auswerten, um tote Routings und Domänen-Lücken zu finden.

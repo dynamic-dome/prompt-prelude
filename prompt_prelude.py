@@ -22,6 +22,13 @@ MIN_PROMPT_LEN = 30
 TRIVIAL = {"ja", "nein", "ok", "okay", "danke", "bitte", "weiter", "stop",
            "ja bitte", "nein danke", "mach weiter", "passt"}
 
+# Harness-generierte Prompts (Subagent-Callbacks, injizierte Reminder) sind kein
+# User-Intent: Routing darauf produzierte Fehl-Domains und verzerrte die
+# H4-Compliance-Messung (Live-Befund 2026-07-02). Nur Prompt-ANFANG matchen —
+# User-Text, der Tags bloß enthält, bleibt normal.
+MACHINE_PROMPT_MARKERS = ("<task-notification>", "<system-reminder>",
+                          "<local-command-stdout>", "<command-name>")
+
 
 def should_skip(prompt):
     """Returns (skip: bool, reason: str).
@@ -33,6 +40,8 @@ def should_skip(prompt):
     s = (prompt if isinstance(prompt, str) else "").strip()
     if s.lower().startswith("//raw"):
         return True, "raw"
+    if s.lower().startswith(MACHINE_PROMPT_MARKERS):
+        return True, "machine_prompt"
     if s.lower() in TRIVIAL:
         return True, "trivial"
     if len(s) < MIN_PROMPT_LEN or len(s.split()) < 4:
@@ -48,8 +57,14 @@ DOMAIN_HINTS = {
     "ui-frontend":   ["ui", "css", "component*", "layout*", "responsive", "frontend*",
                       "button*", "styling", "oberfläche", "oberflaeche", "interface*"],
     "data-analysis": ["daten", "auswert*", "csv", "analyse", "chart*", "viz", "dashboard*", "tabelle*"],
-    "workflow":      ["workflow*", "loop*", "orchestrier*", "subagent*", "pipeline*", "cron*", "agenten"],
+    # debug VOR workflow: match_domain ist first-match-wins in Dict-Reihenfolge,
+    # und Debug-Signale (exception, traceback, crash) müssen die breiten
+    # Agent-Tooling-Wörter (hook*, skill*) schlagen — "debugge einen react hook
+    # mit exception" ist debug, nicht workflow (Codex-Verifier-Finding).
     "debug":         ["bug*", "fehler*", "crash*", "traceback*", "kaputt*", "debug*", "exception*"],
+    "workflow":      ["workflow*", "loop*", "orchestrier*", "subagent*", "pipeline*", "cron*", "agenten",
+                      # Agent-Tooling (Iteration 1): Hook-/Skill-/MCP-Arbeit lief als no_routing
+                      "hook*", "skill*", "mcp*"],
     "research":      ["recherchier*", "recherche", "finde heraus", "quellen", "notebooklm", "was ist"],
     "code-impl":     ["funktion*", "klasse", "klassen", "methode*", "refactor*", "implementier*", "skript*"],
 }
@@ -110,9 +125,9 @@ DOMAIN_ROUTING = {
     "data-analysis": "Prüfe das Capability-RAG nach Daten-Viz-Skills (z.B. d3js-visualization) "
                      "und passenden Auswertungs-Patterns.",
     "workflow":      "Prüfe das Capability-RAG nach Orchestrierungs-/Workflow-Skills und Multi-Agent-Patterns.",
-    "debug":         "Ziehe systematic-debugging / diagnose-hitl in Betracht und reproduziere, bevor du fixt.",
+    "debug":         "Starte mit systematic-debugging bzw. diagnose-hitl und reproduziere den Fehler, bevor du fixt.",
     "research":      "Prüfe die NotebookLM-Registry und deep-research, bevor du aus dem Gedächtnis antwortest.",
-    "code-impl":     "Prüfe kurz, ob ein passender Skill oder ein Pattern im Capability-RAG existiert.",
+    "code-impl":     "Durchsuche das Capability-RAG (memory_search) nach passenden Skills/Patterns, bevor du implementierst.",
 }
 
 PLANNING_ROUTING = ("Planungsphase: Konsultiere die SE-Wissensbasis (§13) und arbeite im "
@@ -129,8 +144,13 @@ def build_rag_routing(domain, phase):
     return lines
 
 
-def compose_context(domain, phase, routing_lines, capabilities=None):
+def compose_context(domain, phase, routing_lines, capabilities=None, query=None):
     """Baut den <prompt_prelude>-Block. Leer-String, wenn nichts Relevantes.
+
+    Wording-Politik (H1, Iteration 1): keine Selbst-Entwertung ("kein Befehl",
+    "optional") — der Funnel deckelt die Frequenz bereits, die Sprache darf
+    imperativ sein. Caps sind ein VORGEZOGENES Suchergebnis (lesen statt selbst
+    suchen); `query` liefert den fertigen memory_search_tool-Einstieg zum Vertiefen.
 
     Die ECHO-Zeile (erzwungene erste Antwortzeile) war Rollout-Verifikation und
     ist nur noch mit Env PRELUDE_ECHO=1 aktiv (Default: aus)."""
@@ -143,11 +163,13 @@ def compose_context(domain, phase, routing_lines, capabilities=None):
                      f"↳ prelude · [{phase}] [{dom}] · RAG-Auftrag aktiv")
         parts.append("")
     if routing_lines:
-        parts.append("RAG-AUFTRAG (weicher Hinweis, kein Befehl):")
+        parts.append("RAG-AUFTRAG (vor dem ersten Arbeitsschritt erledigen):")
         parts.extend(f"- {l}" for l in routing_lines)
+        if query:
+            parts.append(f'- Vertiefung bei Bedarf: memory_search_tool("{query}")')
     if capabilities:
         parts.append("")
-        parts.append("MÖGLICHERWEISE RELEVANT (BM25-Treffer, optional):")
+        parts.append("VORAB-SUCHE Capability-RAG (bereits ausgeführt — prüfe diese Treffer zuerst):")
         parts.extend(f"- [{c}]" for c in capabilities)
     body = "\n".join(parts)
     return f'<prompt_prelude phase="{phase}" domain="{dom}">\n{body}\n</prompt_prelude>'
@@ -230,8 +252,15 @@ def cleanup_state(state_dir, now, max_age_days=7):
         pass
 
 
+# Schema-Version an jedem Event: v2 = Iteration 1 (imperatives Wording,
+# machine_prompt-Skip, query im Kontext). Alt-Events ohne "v" sind Schema v1
+# und dürfen in A/B-Auswertungen nicht mit v2 gemischt werden.
+TELEMETRY_SCHEMA_VERSION = 2
+
+
 def log_telemetry(record, log_path):
     try:
+        record.setdefault("v", TELEMETRY_SCHEMA_VERSION)
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception:
@@ -563,10 +592,11 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
                            "prompt_preview": preview, **ab}, log_path)
             return ""
 
-    caps, caps_source = lookup_capabilities(extract_query(prompt), atlas_root,
+    terms = extract_query(prompt)
+    caps, caps_source = lookup_capabilities(terms, atlas_root,
                                             budget, http_fn=http_fn,
                                             daemon_ok=daemon_scores is not None)
-    ctx = compose_context(domain, phase, routing, caps)
+    ctx = compose_context(domain, phase, routing, caps, query=terms)
     out = make_output(ctx)
 
     if out:
@@ -574,7 +604,7 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
         save_fired(session_id, state_dir, fired)
         log_telemetry({"t": now, "fired": True, "domain": domain, "phase": phase,
                        "key": key, "caps": caps, "caps_count": len(caps),
-                       "caps_source": caps_source,
+                       "caps_source": caps_source, "query": terms,
                        "rearmed": rearmed, "prompt_preview": preview,
                        "matched_keywords": dom_hits + phase_hits,
                        "session": session_id, **ab}, log_path)
