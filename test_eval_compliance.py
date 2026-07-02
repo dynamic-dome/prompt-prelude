@@ -44,6 +44,12 @@ def test_iso_to_epoch_roundtrip():
     assert ec.iso_to_epoch(ISO0) == pytest.approx(T0)
 
 
+def test_iso_to_epoch_without_z_is_still_utc():
+    """Codex-Verifier-Finding: ohne trailing Z darf der naive Timestamp nicht
+    in Lokalzeit kippen — er ist als UTC zu lesen."""
+    assert ec.iso_to_epoch("2026-07-02T12:00:00.000") == pytest.approx(T0)
+
+
 def test_fired_event_followed_within_window(tmp_path):
     prelude = _write_jsonl(tmp_path / "p.jsonl", [_prelude(T0, "s1")])
     data = tmp_path / "data"

@@ -41,8 +41,12 @@ ATLAS_READ_TOOLS = {
 
 
 def iso_to_epoch(ts_utc: str) -> float:
-    """Tracker-ts ('2026-07-02T17:25:56.252Z') -> Epoch-Sekunden."""
-    return datetime.fromisoformat(ts_utc.replace("Z", "+00:00")).timestamp()
+    """Tracker-ts ('2026-07-02T17:25:56.252Z') -> Epoch-Sekunden.
+    Ohne Offset/Z ist der Timestamp als UTC zu lesen (nie Lokalzeit)."""
+    dt = datetime.fromisoformat(ts_utc.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
 
 
 def _iter_jsonl(path: Path):
