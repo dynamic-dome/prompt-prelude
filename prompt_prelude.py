@@ -2,7 +2,7 @@
 """UserPromptSubmit-Hook: routet Claude domänen-gezielt ins Capability-RAG.
 stdlib-only. Fail-soft: Fehler -> kein Output. Exit immer 0.
 Opt-out: Prompt mit //raw prefixen."""
-import sys, os, json, re, time
+import sys, os, json, re, time, hashlib
 import urllib.request
 
 
@@ -128,6 +128,12 @@ DOMAIN_ROUTING = {
     "debug":         "Starte mit systematic-debugging bzw. diagnose-hitl und reproduziere den Fehler, bevor du fixt.",
     "research":      "Prüfe die NotebookLM-Registry und deep-research, bevor du aus dem Gedächtnis antwortest.",
     "code-impl":     "Durchsuche das Capability-RAG (memory_search) nach passenden Skills/Patterns, bevor du implementierst.",
+    # Iteration 2 (v3): breiter Fallback. Der Compliance-Eval (2026-07-03) zeigte,
+    # dass der Advisory-Kanal als ANWEISUNG ~3% wirkt — der Wert liegt in der
+    # Vorab-Injektion der Caps. Darum feuert jetzt JEDER substantielle Prompt
+    # ohne Spezial-Domain als 'general' und zieht dieselbe Caps-Vorabsuche.
+    "general":       "Prüfe das Capability-RAG (memory_search_tool) nach passenden Skills/Fähigkeiten "
+                     "oder Stack-Wissen, bevor du antwortest — die Vorab-Treffer unten sind schon gesucht.",
 }
 
 PLANNING_ROUTING = ("Planungsphase: Konsultiere die SE-Wissensbasis (§13) und arbeite im "
@@ -175,23 +181,54 @@ def compose_context(domain, phase, routing_lines, capabilities=None, query=None)
     return f'<prompt_prelude phase="{phase}" domain="{dom}">\n{body}\n</prompt_prelude>'
 
 
-def make_output(additional_context):
-    """Finales JSON gemäß Hook-Contract. Leer-String -> kein Output."""
-    if not additional_context:
+def build_system_message(domain, phase, caps, caps_source):
+    """Sichtbare Status-Zeile für den USER (natives systemMessage-Feld, in den
+    Claude-Code-Docs 'shown to the user'). Der additionalContext geht nur in
+    Claudes Kontext — DAS hier ist der einzige Kanal, den der Mensch am Schirm
+    sieht. Kompakt: was hat der Hook entschieden + wie viele Caps vorab gesucht."""
+    n = len(caps or [])
+    return f"prelude ▸ {domain or '-'} · {phase} · caps={n}({caps_source or 'none'})"
+
+
+def make_output(additional_context, system_message=None):
+    """Finales JSON gemäß Hook-Contract. Leer-String + keine systemMessage -> kein Output.
+
+    additionalContext -> Claudes Kontext (unsichtbar für den User).
+    systemMessage     -> sichtbare Zeile beim User (nur beim Feuern gesetzt)."""
+    if not additional_context and not system_message:
         return ""
-    return json.dumps({
-        "hookSpecificOutput": {
+    out = {}
+    if additional_context:
+        out["hookSpecificOutput"] = {
             "hookEventName": "UserPromptSubmit",
             "additionalContext": additional_context,
         }
-    }, ensure_ascii=False)
+    if system_message:
+        out["systemMessage"] = system_message
+    return json.dumps(out, ensure_ascii=False)
 
 
-def dedupe_key(domain, phase):
-    """Feiner Key domain:phase — quiet->planning derselben Domain feuert erneut
-    (Live-Befund 1: reiner Domain-Key war zu grob, 35 deduped vs. 16 fired)."""
+def topic_signature(prompt):
+    """Kurzer stabiler Hash der signifikanten Tokens eines Prompts.
+
+    v3-Dedupe: statt 1x pro domain:phase pro Session (fühlte sich tot an, weil
+    nach dem ersten Feuern Stille herrschte) feuert jetzt jedes NEUE Thema wieder,
+    nur exakte Themen-Wiederholung bleibt still. Order-unabhängig (sortierte
+    Token-Menge), damit 'baue X layout' == 'layout baue X'."""
+    text = prompt if isinstance(prompt, str) else ""   # fail-soft: nie auf Nicht-String .lower()
+    toks = sorted(set(re.findall(r"[a-zA-ZäöüÄÖÜß]{4,}", text.lower())) - STOP_WORDS)
+    if not toks:
+        return "0"
+    return hashlib.sha1(" ".join(toks).encode("utf-8")).hexdigest()[:8]
+
+
+def dedupe_key(domain, phase, topic_sig=None):
+    """Key domain:phase:topic — quiet->planning derselben Domain feuert erneut
+    (Live-Befund 1), und ein neues Thema (topic_sig) feuert ebenfalls erneut (v3).
+    Ohne topic_sig bleibt der Key rückwärtskompatibel domain:phase."""
     if domain:
-        return f"{domain}:{phase}"
+        base = f"{domain}:{phase}"
+        return f"{base}:{topic_sig}" if topic_sig else base
     return "_planning_" if phase == "planning" else "_none_"
 
 
@@ -252,10 +289,10 @@ def cleanup_state(state_dir, now, max_age_days=7):
         pass
 
 
-# Schema-Version an jedem Event: v2 = Iteration 1 (imperatives Wording,
-# machine_prompt-Skip, query im Kontext). Alt-Events ohne "v" sind Schema v1
-# und dürfen in A/B-Auswertungen nicht mit v2 gemischt werden.
-TELEMETRY_SCHEMA_VERSION = 2
+# Schema-Version an jedem Event: v3 = Iteration 2 (general-Fallback: breit feuern,
+# sichtbare systemMessage-Zeile, Dedupe pro Thema). v2 = Iteration 1 (imperatives
+# Wording, machine_prompt-Skip). v1 = ohne "v". Auswertungen NIE über Versionen mischen.
+TELEMETRY_SCHEMA_VERSION = 3
 
 
 def log_telemetry(record, log_path):
@@ -560,7 +597,9 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
     elif keyword_domain:
         domain, routing_source = keyword_domain, "keywords"
     else:
-        domain, routing_source = None, "none"
+        # v3: kein Spezial-Routing -> general-Fallback (statt no_routing/Stille).
+        # Jeder substantielle Prompt zieht so die RAG-Vorabsuche + Caps-Injektion.
+        domain, routing_source = "general", "fallback"
 
     ab = {  # A/B-Telemetrie: hängt an JEDEM post-classify Event
         "routing_source": routing_source,
@@ -581,7 +620,7 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
 
     cleanup_state(state_dir, now)
 
-    key = dedupe_key(domain, phase)
+    key = dedupe_key(domain, phase, topic_signature(prompt))
     fired = load_fired(session_id, state_dir)
     rearmed = False
     if key in fired:
@@ -597,7 +636,9 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
                                             budget, http_fn=http_fn,
                                             daemon_ok=daemon_scores is not None)
     ctx = compose_context(domain, phase, routing, caps, query=terms)
-    out = make_output(ctx)
+    # systemMessage nur beim tatsächlichen Feuern (Q1: sichtbare Zeile nur wenn feuert).
+    sys_msg = build_system_message(domain, phase, caps, caps_source) if ctx else None
+    out = make_output(ctx, system_message=sys_msg)
 
     if out:
         fired.add(key)

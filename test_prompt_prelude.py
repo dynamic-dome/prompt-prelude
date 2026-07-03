@@ -271,7 +271,7 @@ class TestTelemetry:
         log = os.path.join(tmp_state_dir, "t.jsonl")
         pp.log_telemetry({"a": 1}, log)
         ev = _json.loads(open(log, encoding="utf-8").read().strip())
-        assert ev["v"] == pp.TELEMETRY_SCHEMA_VERSION == 2
+        assert ev["v"] == pp.TELEMETRY_SCHEMA_VERSION == 3
 
 
 class TestExtractQuery:
@@ -405,12 +405,14 @@ class TestRun:
         assert 'memory_search_tool("' in ctx
 
     def test_skip_event_has_prompt_preview(self, tmp_path):
+        # v3: substantielle Prompts feuern jetzt (general-Fallback) — für die
+        # Preview-auf-Skip-Prüfung einen weiterhin-übersprungenen too_short-Fall nehmen.
         log = tmp_path / "l"
-        pp.run({"prompt": "erzähl mir bitte was über das wetter morgen früh", "session_id": "s"},
+        pp.run({"prompt": "mach schnell", "session_id": "s"},
                atlas_root="x", state_dir=str(tmp_path / "st"), log_path=str(log), now=1.0)
         ev = _json.loads(log.read_text(encoding="utf-8").strip().splitlines()[-1])
-        assert ev["skip"] == "no_routing"
-        assert ev["prompt_preview"].startswith("erzähl mir")
+        assert ev["skip"] == "too_short"
+        assert ev["prompt_preview"].startswith("mach schnell")
 
 
 class TestCleanupState:
@@ -457,6 +459,20 @@ class TestMain:
         ev = _json.loads(log.read_text(encoding="utf-8").strip().splitlines()[-1])
         assert ev["skip"] == "crash" and "kaboom" in ev["error"]
         assert ev["prompt_preview"] == "x"
+
+    def test_fire_prints_json_with_system_message(self, monkeypatch, tmp_path, capsys):
+        # v3: der echte main()-stdin-Pfad muss beim Feuern gültiges JSON mit der
+        # sichtbaren systemMessage drucken (Daemon down via conftest -> general-Fallback).
+        import io, sys
+        self._isolate(monkeypatch, tmp_path)
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)  # hermetisch
+        monkeypatch.setattr(sys, "stdin", io.StringIO(
+            _json.dumps({"prompt": "erzähl mir bitte was über das wetter morgen früh",
+                         "session_id": "m"})))
+        assert pp.main() == 0
+        obj = _json.loads(capsys.readouterr().out.strip())
+        assert obj["systemMessage"].startswith("prelude ▸")
+        assert obj["hookSpecificOutput"]["hookEventName"] == "UserPromptSubmit"
 
     def test_crash_logging_itself_failsoft(self, monkeypatch, tmp_path, capsys):
         import io, sys
@@ -660,13 +676,16 @@ class TestRunSemanticRouting:
         assert ev["routing_source"] == "keywords"
         assert ev["daemon_top"][0]["name"] == "research"
 
-    def test_no_routing_event_carries_ab_fields(self, tmp_path):
-        # weder Daemon (down) noch Keywords -> no_routing, aber A/B-Felder da
+    def test_fallback_fire_carries_ab_fields(self, tmp_path, monkeypatch):
+        # v3: weder Daemon (down) noch Keywords -> general-Fallback FEUERT jetzt,
+        # A/B-Felder bleiben am fired-Event erhalten (routing_source=fallback).
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)  # hermetisch, keine caps
         pp.run({"prompt": "erzähl mir bitte was über das wetter morgen früh", "session_id": "s"},
                http_fn=_mk_http(), **self._kw(tmp_path))
         ev = self._last_event(tmp_path)
-        assert ev["skip"] == "no_routing"
-        assert ev["routing_source"] == "none"
+        assert ev["fired"] is True
+        assert ev["domain"] == "general"
+        assert ev["routing_source"] == "fallback"
         assert ev["keyword_domain"] is None and ev["daemon_top"] == []
 
     def test_fired_telemetry_has_all_new_fields(self, tmp_path):
@@ -757,3 +776,135 @@ class TestSessionSanitize:
     def test_empty_session_id_defaults(self, tmp_path):
         pp.save_fired("", str(tmp_path), {"z"})
         assert pp.load_fired("", str(tmp_path)) == {"z"}
+
+
+# ===========================================================================
+# Iteration 2 (v3): breit feuern (general-Fallback) + sichtbare systemMessage
+# + Dedupe pro Thema. Motivation: Compliance-Eval zeigte, dass der Advisory-
+# Kanal als ANWEISUNG ~3% wirkt; Wert liegt in der Vorab-Injektion + Sichtbarkeit.
+# ===========================================================================
+
+class TestV3GeneralFallback:
+    def _kw(self, tmp_path):
+        return dict(atlas_root="x", state_dir=str(tmp_path / "st"),
+                    log_path=str(tmp_path / "l"), now=1.0)
+
+    def _last_event(self, tmp_path):
+        return _json.loads((tmp_path / "l").read_text(encoding="utf-8").strip().splitlines()[-1])
+
+    def test_substantive_prompt_without_domain_fires_general(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)  # hermetisch
+        out = pp.run({"prompt": "erzähl mir bitte was über das wetter morgen früh", "session_id": "s"},
+                     http_fn=_mk_http(), **self._kw(tmp_path))
+        assert out != ""
+        ctx = _json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        assert 'domain="general"' in ctx
+
+    def test_specific_domain_still_wins_over_general(self, tmp_path, monkeypatch, fake_atlas_db):
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
+        out = pp.run({"prompt": KEYWORD_UI_PROMPT, "session_id": "s"},
+                     http_fn=_mk_http(), **self._kw(tmp_path))
+        ctx = _json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        assert 'domain="ui-frontend"' in ctx
+
+    def test_general_routing_line_present(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)
+        out = pp.run({"prompt": "erzähl mir bitte was über das wetter morgen früh", "session_id": "s"},
+                     http_fn=_mk_http(), **self._kw(tmp_path))
+        ctx = _json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        assert "memory_search_tool" in ctx
+
+    def test_trivial_still_skips_no_general(self, tmp_path):
+        assert pp.run({"prompt": "ok", "session_id": "s"}, **self._kw(tmp_path)) == ""
+
+    def test_machine_prompt_still_skips_no_general(self, tmp_path):
+        p = "<task-notification>\n<task-id>x</task-id>\n</task-notification>"
+        assert pp.run({"prompt": p, "session_id": "s"}, **self._kw(tmp_path)) == ""
+
+    def test_build_rag_routing_general(self):
+        lines = pp.build_rag_routing("general", "quiet")
+        assert lines and "memory_search_tool" in lines[0]
+
+
+class TestV3SystemMessage:
+    def _kw(self, tmp_path):
+        return dict(atlas_root="x", state_dir=str(tmp_path / "st"),
+                    log_path=str(tmp_path / "l"), now=1.0)
+
+    def test_build_system_message_format(self):
+        msg = pp.build_system_message("general", "quiet", ["a", "b"], "daemon")
+        assert msg == "prelude ▸ general · quiet · caps=2(daemon)"
+
+    def test_build_system_message_zero_caps(self):
+        assert pp.build_system_message("debug", "planning", [], "none") == \
+            "prelude ▸ debug · planning · caps=0(none)"
+
+    def test_make_output_includes_system_message(self):
+        raw = pp.make_output("<x>ctx</x>", system_message="prelude ▸ debug")
+        obj = _json.loads(raw)
+        assert obj["systemMessage"] == "prelude ▸ debug"
+        assert obj["hookSpecificOutput"]["additionalContext"] == "<x>ctx</x>"
+
+    def test_make_output_no_system_message_by_default(self):
+        obj = _json.loads(pp.make_output("<x>ctx</x>"))
+        assert "systemMessage" not in obj
+
+    def test_make_output_system_message_only(self):
+        # Codex-Nit #3: Helfer-Kontrakt gepinnt — systemMessage OHNE Kontext
+        # erzeugt ein systemMessage-only-JSON (run() nutzt das nie, aber der
+        # Helfer darf es und das Verhalten ist jetzt festgeschrieben).
+        obj = _json.loads(pp.make_output("", system_message="prelude ▸ x"))
+        assert obj == {"systemMessage": "prelude ▸ x"}
+        assert "hookSpecificOutput" not in obj
+
+    def test_fire_emits_visible_system_message(self, tmp_path, monkeypatch, fake_atlas_db):
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
+        out = pp.run({"prompt": KEYWORD_UI_PROMPT, "session_id": "s"},
+                     http_fn=_mk_http(), **self._kw(tmp_path))
+        obj = _json.loads(out)
+        assert obj["systemMessage"].startswith("prelude ▸")
+        assert "ui-frontend" in obj["systemMessage"]
+        assert "caps=" in obj["systemMessage"]
+
+    def test_skip_has_no_output_no_system_message(self, tmp_path):
+        # Q1: sichtbare Zeile NUR wenn der Hook feuert
+        assert pp.run({"prompt": "ok", "session_id": "s"}, **self._kw(tmp_path)) == ""
+
+
+class TestV3TopicDedupe:
+    def _kw(self, tmp_path):
+        return dict(atlas_root="x", state_dir=str(tmp_path / "st"),
+                    log_path=str(tmp_path / "l"), now=1.0)
+
+    def test_dedupe_key_includes_topic_sig(self):
+        assert pp.dedupe_key("ui-frontend", "quiet", "abc123") == "ui-frontend:quiet:abc123"
+
+    def test_dedupe_key_backward_compatible_without_sig(self):
+        assert pp.dedupe_key("ui-frontend", "quiet") == "ui-frontend:quiet"
+
+    def test_topic_signature_stable_and_order_independent(self):
+        a = pp.topic_signature("baue ein responsive layout header")
+        b = pp.topic_signature("header layout responsive baue ein")
+        c = pp.topic_signature("style den footer button modern")
+        assert a == b and a != c
+
+    def test_topic_signature_nonstring_failsoft(self):
+        # Codex-Nit #1: defensiv gegen Nicht-Strings (should_skip fängt das zwar
+        # vorher ab, aber die Funktion selbst darf nie werfen -> fail-soft).
+        for bad in (1234, {"x": 1}, None, ["a"]):
+            assert pp.topic_signature(bad) == "0"
+
+    def test_same_topic_repeated_dedupes(self, tmp_path, monkeypatch, fake_atlas_db):
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
+        kw = self._kw(tmp_path)
+        p = {"prompt": "baue ein responsive component layout für den header bereich", "session_id": "s"}
+        assert pp.run(p, http_fn=_mk_http(), **kw) != ""
+        assert pp.run(p, http_fn=_mk_http(), **kw) == ""   # exakt gleiches Thema -> still
+
+    def test_different_topics_same_domain_both_fire(self, tmp_path, monkeypatch, fake_atlas_db):
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
+        kw = self._kw(tmp_path)
+        p1 = {"prompt": "baue ein responsive component layout für den header bereich", "session_id": "s"}
+        p2 = {"prompt": "style den footer button mit css und mach das interface moderner", "session_id": "s"}
+        assert pp.run(p1, http_fn=_mk_http(), **kw) != ""
+        assert pp.run(p2, http_fn=_mk_http(), **kw) != ""   # anderes Thema, gleiche Domain -> feuert
