@@ -289,13 +289,14 @@ def cleanup_state(state_dir, now, max_age_days=7):
         pass
 
 
-# Schema-Version an jedem Event: v4 = Iteration 3 (stdin-UTF-8-Fix: alle Events
-# davor sind Mojibake-vergiftet — Umlaute kamen als cp1252-Bytes an, 0/208
-# v3-Events mit korrekten Umlauten). v3 = Iteration 2 (general-Fallback: breit
-# feuern, sichtbare systemMessage-Zeile, Dedupe pro Thema). v2 = Iteration 1
-# (imperatives Wording, machine_prompt-Skip). v1 = ohne "v".
-# Auswertungen NIE über Versionen mischen.
-TELEMETRY_SCHEMA_VERSION = 4
+# Schema-Version an jedem Event: v5 = Caps-Gating atlas/-only plus Query-Cleanup
+# (Caps-Semantik geändert: A/B-Daten NIE über v4/v5 mischen). v4 = stdin-
+# UTF-8-Fix: alle Events davor sind Mojibake-vergiftet — Umlaute kamen als
+# cp1252-Bytes an, 0/208 v3-Events mit korrekten Umlauten. v3 = Iteration 2
+# (general-Fallback: breit feuern, sichtbare systemMessage-Zeile, Dedupe pro
+# Thema). v2 = Iteration 1 (imperatives Wording, machine_prompt-Skip). v1 =
+# ohne "v". Auswertungen NIE über Versionen mischen.
+TELEMETRY_SCHEMA_VERSION = 5
 
 
 def log_telemetry(record, log_path):
@@ -311,16 +312,22 @@ ATLAS_ROOT_DEFAULT = r"C:\Users\domes\AI\agent-memory-atlas\.atlas-index"
 
 STOP_WORDS = {"ich", "du", "wir", "das", "die", "der", "ein", "eine", "ist", "sind",
               "hab", "habe", "bitte", "kannst", "mich", "mir", "wie", "was", "warum",
-              "machen", "kann", "soll", "beim", "wenn", "dann", "auch", "noch", "mal"}
+              "machen", "kann", "soll", "beim", "wenn", "dann", "auch", "noch", "mal",
+              "einfach", "jetzt", "gerne", "eigentlich", "vielleicht", "okay", "sagen",
+              "schauen", "erstmal", "wirklich", "vielen", "dank", "danke", "super",
+              "würde", "wuerde", "möchte", "moechte", "sollte", "irgendwie", "quasi"}
 
 
 def extract_query(prompt):
-    low = prompt.lower()
-    domains = [d for d, kws in DOMAIN_HINTS.items()
-               if any(_kw_regex(kw).search(low) for kw in kws)]
-    tokens = re.findall(r"[a-zA-ZäöüÄÖÜß]{4,}", prompt)
+    """Nur Content-Tokens (Stopwörter raus, max 12). Seit v5 werden die
+    Domain-LABELS nicht mehr vorangestellt — Label-Namen sind keine
+    Suchbegriffe und verzerrten BM25 wie Embedding (Live-Telemetrie:
+    "data-analysis workflow research …"-Queries). Content-Wörter wie
+    "frontend" oder "workflow" bleiben bewusst erhalten: sie sind
+    hochsignifikante Suchbegriffe, nur das Voranstellen war das Problem."""
+    tokens = re.findall(r"[a-zA-ZäöüÄÖÜß]{4,}", str(prompt))
     tokens = [t for t in tokens if t.lower() not in STOP_WORDS]
-    return " ".join((domains + tokens[:8])[:12])
+    return " ".join(tokens[:12])
 
 
 def find_atlas_db(atlas_root):
@@ -343,25 +350,33 @@ def build_fts_query(terms):
     return " OR ".join('"{}"'.format(t.replace('"', '""')) for t in tokens)
 
 
-def query_atlas(terms, db_path, limit=3):
-    if not terms.strip() or not db_path:
-        return []
-    fts = build_fts_query(terms)
+def _query_atlas_filtered(terms, db_path, limit=3, raw_limit=12):
+    if not str(terms).strip() or not db_path:
+        return [], 0
+    fts = build_fts_query(str(terms))
     if not fts:
-        return []
+        return [], 0
     try:
         import sqlite3
         conn = sqlite3.connect(db_path, timeout=0.5)
         try:
-            rows = conn.execute(
+            raw_rows = conn.execute(
                 "SELECT record_id FROM chunks WHERE chunks MATCH ? ORDER BY rank LIMIT ?",
-                (fts, limit),
+                (fts, int(raw_limit)),
+            ).fetchall()
+            rows = conn.execute(
+                "SELECT record_id FROM chunks WHERE chunks MATCH ? AND record_id LIKE 'atlas/%' ORDER BY rank LIMIT ?",
+                (fts, int(limit)),
             ).fetchall()
         finally:
             conn.close()
-        return [r[0] for r in rows]
+        return [r[0] for r in rows], len(raw_rows)
     except Exception:
-        return []
+        return [], 0
+
+
+def query_atlas(terms, db_path, limit=3):
+    return _query_atlas_filtered(terms, db_path, limit=limit)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -543,13 +558,22 @@ def search_via_daemon(terms, k=3, timeout=None, http_fn=None):
         return None
 
 
+def _cap_text(value):
+    text = " ".join(str(value or "").split()).strip()
+    # Live-Befund 2026-07-07: /search liefert teils Frontmatter-Delimiter
+    # ("---") als Heading; solche Strukturzeichen sind kein nutzbarer Hint.
+    if text and re.fullmatch(r"[-_#>\s]+", text):
+        return ""
+    return text
+
+
 def format_cap_hint(result):
     """Kompakter Hint aus einem /search-Result: 'record_id — Titel' wenn heading/
     snippet vorhanden (informativer als nackte record_id), hart gekappt —
     Injektions-Budget! Fail-soft: kaputtes Result -> ''."""
     try:
         rid = str(result.get("record_id", "") or "").strip()
-        title = " ".join(str(result.get("heading") or result.get("snippet") or "").split()).strip()
+        title = _cap_text(result.get("heading")) or _cap_text(result.get("snippet"))
         if title and rid and title.lower() != rid.lower():
             return f"{rid} — {title[:60]}"
         return rid or title[:60]
@@ -559,17 +583,25 @@ def format_cap_hint(result):
 
 def lookup_capabilities(terms, atlas_root, budget, http_fn=None, limit=3, daemon_ok=True):
     """Caps-Lookup-Kaskade: Daemon /search zuerst, bei Fehler/Budget-Skip
-    Fallback auf den direkten SQLite/FTS5-Pfad. -> (hints, caps_source).
-    daemon_ok=False (z.B. classify schlug schon fehl -> Daemon gilt für diesen
-    Lauf als down) skippt den /search-Versuch komplett: Windows brennt für
-    connection-refused auf localhost den VOLLEN Timeout ab (~0.5s gemessen),
-    ein zweiter toter Call wäre reine Latenz-Verschwendung."""
-    results = budget.call(search_via_daemon, terms, limit, http_fn=http_fn) if daemon_ok else None
+    Fallback auf den direkten SQLite/FTS5-Pfad. -> (hints, caps_source,
+    caps_raw_count). daemon_ok=False (z.B. classify schlug schon fehl -> Daemon
+    gilt für diesen Lauf als down) skippt den /search-Versuch komplett.
+
+    Iteration 3/v5 (2026-07-07): /search-Scores sind RRF-Rank-Fusion
+    (rrf_fuse, k_const=60) und clustern für gute wie Junk-Queries ähnlich bei
+    ca. 0.014-0.023; Score-Thresholds taugen NICHT als Relevanz-Gate. Live-Probe
+    mit k=10 zeigte: Capability-Treffer tragen record_id-Prefix "atlas/", Junk
+    hatte 0 atlas/-Treffer. Darum ist der Prefix-Filter das Gate; leer nach dem
+    Filter ist absichtlich besser als ein falscher Caps-Hint."""
+    overfetch = max(12, int(limit))
+    results = budget.call(search_via_daemon, terms, overfetch, http_fn=http_fn) if daemon_ok else None
     if results is not None:
-        hints = [h for h in (format_cap_hint(r) for r in results[:limit]) if h]
-        return hints, ("daemon" if hints else "none")
-    caps = query_atlas(terms, find_atlas_db(atlas_root), limit)
-    return caps, ("sqlite" if caps else "none")
+        raw_count = len(results)
+        filtered = [r for r in results if str((r or {}).get("record_id", "")).startswith("atlas/")]
+        hints = [h for h in (format_cap_hint(r) for r in filtered[:limit]) if h]
+        return hints, ("daemon" if hints else "none"), raw_count
+    caps, raw_count = _query_atlas_filtered(terms, find_atlas_db(atlas_root), limit=limit, raw_limit=overfetch)
+    return caps, ("sqlite" if caps else "none"), raw_count
 
 
 def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=None):
@@ -635,10 +667,13 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
             return ""
 
     terms = extract_query(prompt)
-    caps, caps_source = lookup_capabilities(terms, atlas_root,
-                                            budget, http_fn=http_fn,
-                                            daemon_ok=daemon_scores is not None)
-    ctx = compose_context(domain, phase, routing, caps, query=terms)
+    caps, caps_source, caps_raw_count = lookup_capabilities(terms, atlas_root,
+                                                            budget, http_fn=http_fn,
+                                                            daemon_ok=daemon_scores is not None)
+    # Unter 2 Content-Tokens ist die Vertiefungszeile Rauschen
+    # (Live-Smoke 2026-07-07: memory_search_tool("weiter") auf Junk-Prompt).
+    ctx = compose_context(domain, phase, routing, caps,
+                          query=terms if len(terms.split()) >= 2 else None)
     # systemMessage nur beim tatsächlichen Feuern (Q1: sichtbare Zeile nur wenn feuert).
     sys_msg = build_system_message(domain, phase, caps, caps_source) if ctx else None
     out = make_output(ctx, system_message=sys_msg)
@@ -648,6 +683,7 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
         save_fired(session_id, state_dir, fired)
         log_telemetry({"t": now, "fired": True, "domain": domain, "phase": phase,
                        "key": key, "caps": caps, "caps_count": len(caps),
+                       "caps_raw_count": caps_raw_count,
                        "caps_source": caps_source, "query": terms,
                        "rearmed": rearmed, "prompt_preview": preview,
                        "matched_keywords": dom_hits + phase_hits,

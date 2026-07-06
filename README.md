@@ -59,7 +59,21 @@ Die Domain-Erkennung ist eine **Kaskade**, keyword-Matching bleibt vollständig 
 
 Der **Caps-Lookup** kaskadiert analog: `POST /search` zuerst (Hints werden mit
 `heading`/`snippet` informativer: `record_id — Titel`, 60-Zeichen-Cap), bei
-Fehler Fallback auf den direkten SQLite/FTS5-Pfad. Schlug schon `/classify`
+Fehler Fallback auf den direkten SQLite/FTS5-Pfad.
+
+**Caps-Gating (v5, 2026-07-07):** injiziert werden nur noch Capability-Records
+(record_id-Präfix `atlas/`), mit k=12 überholt und client-seitig gefiltert
+(SQLite analog via `LIKE 'atlas/%'`). Hintergrund: die `/search`-Scores sind
+RRF-Rang-Fusion (~0.014–0.023 für gute wie Müll-Queries) — ein Score-Threshold
+kann NICHT als Relevanz-Gate dienen. Live-Probe: gute Capability-Queries haben
+1–2 `atlas/`-Treffer in den Top-10, Junk-Queries exakt 0 — der Präfix-Filter
+ist damit Scope-Korrektur und Relevanz-Gate zugleich; leere Caps sind gewollt
+besser als falsche (der VORAB-SUCHE-Block entfällt dann, der RAG-Auftrag
+bleibt). Headings aus reinen Strukturzeichen ("---") fallen auf Snippet/
+record_id zurück. `extract_query` stellt keine Domain-Labels mehr voran
+(Label-Namen sind keine Suchbegriffe; Content-Wörter wie "frontend" bleiben)
+und filtert Live-beobachtete Füllwörter; unter 2 Content-Tokens entfällt die
+Vertiefungszeile. Schlug schon `/classify`
 fehl, gilt der Daemon für diesen Lauf als down und `/search` wird gar nicht
 erst versucht (Windows brennt für connection-refused auf localhost den vollen
 Timeout ab, gemessen ~0.5s pro totem Call).
@@ -98,9 +112,12 @@ können diese Bug-Klasse prinzipiell nicht sehen.
 ## Telemetrie
 `prompt_prelude.jsonl` (gitignored, bleibt lokal): pro Prompt ein Event mit
 skip-Grund ODER `fired`-Routing. Auditierbare Felder pro Event:
-- `v` (Schema-Version, aktuell 4 = stdin-UTF-8-Fix): v1-v3-Events sind
-  Mojibake-vergiftet (cp1252-stdin) — Routing-/Compliance-Auswertungen und
-  Threshold-Kalibrierung NUR innerhalb v4 fahren, nie über Versionen mischen,
+- `v` (Schema-Version, aktuell 5 = Caps-Gating atlas/-only + Query-Cleanup;
+  v4 = stdin-UTF-8-Fix): v1-v3-Events sind Mojibake-vergiftet (cp1252-stdin),
+  v4 hat andere Caps-Semantik als v5 — Routing-/Compliance-Auswertungen und
+  Threshold-Kalibrierung NUR innerhalb einer Version fahren, nie mischen,
+- bei `fired`: `caps_raw_count` (Treffer VOR dem atlas/-Filter) neben
+  `caps_count` — zeigt, wie viel das Gate wegschneidet,
 - `prompt_preview` (erste 80 Zeichen) auf allen Events,
 - bei `fired`: `matched_keywords` (Domain- + Planning-Treffer), `caps`,
   `caps_count` (0 = toter BM25-Lookup, fällt sofort auf), `rearmed`,

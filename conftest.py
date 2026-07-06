@@ -30,9 +30,13 @@ def fake_atlas_db(tmp_path):
     conn = sqlite3.connect(str(db))
     conn.execute("CREATE VIRTUAL TABLE chunks USING fts5(text, record_id, chunk_id, source_path)")
     rows = [
-        ("systematic debugging skill for bugs and test failures", "skill:diagnose-hitl", "0", "x.md"),
-        ("frontend design ui component layout skill", "skill:frontend-design", "0", "y.md"),
-        ("d3js data visualization chart skill", "skill:d3js-visualization", "0", "z.md"),
+        # record_ids spiegeln das Produktions-Schema: Capabilities tragen den
+        # Präfix "atlas/" (v5-Gate filtert darauf), plus ein Nicht-Capability-Row,
+        # der vom Filter zwingend verworfen werden muss.
+        ("systematic debugging skill for bugs and test failures", "atlas/skill:diagnose-hitl", "0", "x.md"),
+        ("frontend design ui component layout skill", "atlas/skill:frontend-design", "0", "y.md"),
+        ("d3js data visualization chart skill", "atlas/skill:d3js-visualization", "0", "z.md"),
+        ("frontend design ui component layout unrelated wiki copy", "haupt-wiki/queries/session-x", "0", "junk.md"),
     ]
     conn.executemany("INSERT INTO chunks VALUES (?,?,?,?)", rows)
     conn.commit()

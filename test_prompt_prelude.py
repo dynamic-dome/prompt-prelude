@@ -189,29 +189,29 @@ class TestComposeContext:
         assert "↳ prelude" not in out
 
     def test_capabilities_block(self):
-        out = pp.compose_context("debug", "quiet", ["y"], ["skill:diagnose-hitl"])
-        assert "skill:diagnose-hitl" in out
+        out = pp.compose_context("debug", "quiet", ["y"], ["atlas/skill:diagnose-hitl"])
+        assert "atlas/skill:diagnose-hitl" in out
 
     # --- Iteration 1 (H1): Wording ohne Selbst-Entwertung. H4-Befund: 3% Compliance
     # vs. 2% Skip-Baseline — "kein Befehl"/"optional" gaben dem Modell explizit
     # die Erlaubnis wegzuschauen.
     def test_no_self_devaluation_wording(self):
-        out = pp.compose_context("debug", "quiet", ["y"], ["skill:diagnose-hitl"])
+        out = pp.compose_context("debug", "quiet", ["y"], ["atlas/skill:diagnose-hitl"])
         assert "kein Befehl" not in out
         assert "optional" not in out.lower()
         assert "MÖGLICHERWEISE" not in out
 
     def test_caps_presented_as_executed_search(self):
         # Treffer sind vorgezogenes Suchergebnis (lesen statt selbst suchen)
-        out = pp.compose_context("debug", "quiet", ["y"], ["skill:diagnose-hitl"])
+        out = pp.compose_context("debug", "quiet", ["y"], ["atlas/skill:diagnose-hitl"])
         assert "bereits ausgeführt" in out
 
     def test_query_renders_ready_search_call(self):
-        out = pp.compose_context("debug", "quiet", ["y"], ["skill:x"], query="debug traceback parser")
+        out = pp.compose_context("debug", "quiet", ["y"], ["atlas/skill:x"], query="debug traceback parser")
         assert 'memory_search_tool("debug traceback parser")' in out
 
     def test_no_query_no_search_call_line(self):
-        out = pp.compose_context("debug", "quiet", ["y"], ["skill:x"])
+        out = pp.compose_context("debug", "quiet", ["y"], ["atlas/skill:x"])
         assert "memory_search_tool(" not in out
 
 
@@ -273,13 +273,14 @@ class TestTelemetry:
         ev = _json.loads(open(log, encoding="utf-8").read().strip())
         # v4 = Iteration 3 (stdin-UTF-8-Fix): Live-Daten davor sind Mojibake-
         # vergiftet, Auswertungen NIE über die Versionsgrenze mischen.
-        assert ev["v"] == pp.TELEMETRY_SCHEMA_VERSION == 4
+        assert ev["v"] == pp.TELEMETRY_SCHEMA_VERSION == 5
 
 
 class TestExtractQuery:
-    def test_strips_stopwords_keeps_domain(self):
+    def test_strips_stopwords_excludes_domain(self):
         q = pp.extract_query("ich habe einen bug im traceback was kann ich machen")
-        assert "debug" in q and "ich" not in q.split()
+        assert "debug" not in q and "ich" not in q.split()
+        assert "traceback" in q
 
     def test_caps_length(self):
         q = pp.extract_query("wort " * 40)
@@ -289,7 +290,7 @@ class TestExtractQuery:
 class TestQueryAtlas:
     def test_finds_known_record(self, fake_atlas_db):
         out = pp.query_atlas("debugging", fake_atlas_db, limit=3)
-        assert "skill:diagnose-hitl" in out
+        assert "atlas/skill:diagnose-hitl" in out
 
     def test_empty_terms(self, fake_atlas_db):
         assert pp.query_atlas("   ", fake_atlas_db) == []
@@ -308,14 +309,14 @@ class TestQueryAtlas:
     def test_hyphenated_domain_prefix_hits(self, fake_atlas_db):
         # exakt der Live-Fehlerfall: Domain-Präfix mit Bindestrich vorne dran
         out = pp.query_atlas("ui-frontend component layout", fake_atlas_db, limit=3)
-        assert "skill:frontend-design" in out
+        assert "atlas/skill:frontend-design" in out
 
     def test_extract_query_output_hits_atlas(self, fake_atlas_db):
-        # Integrationstest: echter extract_query-Output MIT Domain-Präfix durch die Fake-FTS5-DB
+        # Integrationstest: echter extract_query-Output OHNE Domain-Präfix durch die Fake-FTS5-DB
         q = pp.extract_query("baue mir ein ui component layout für die seite")
-        assert "ui-frontend" in q  # Präfix ist wirklich drin
+        assert "ui-frontend" not in q
         out = pp.query_atlas(q, fake_atlas_db, limit=3)
-        assert "skill:frontend-design" in out
+        assert "atlas/skill:frontend-design" in out
 
 
 class TestFindAtlasDb:
@@ -599,16 +600,16 @@ class TestPickDaemonDomain:
 
 class TestFormatCapHint:
     def test_with_heading(self):
-        r = {"record_id": "skill:frontend-design", "heading": "Frontend  Design\nGuide"}
-        assert pp.format_cap_hint(r) == "skill:frontend-design — Frontend Design Guide"
+        r = {"record_id": "atlas/skill:frontend-design", "heading": "Frontend  Design\nGuide"}
+        assert pp.format_cap_hint(r) == "atlas/skill:frontend-design — Frontend Design Guide"
 
     def test_record_id_only(self):
-        assert pp.format_cap_hint({"record_id": "skill:x"}) == "skill:x"
+        assert pp.format_cap_hint({"record_id": "atlas/skill:x"}) == "atlas/skill:x"
 
     def test_snippet_fallback_and_cap(self):
-        r = {"record_id": "r1", "snippet": "s" * 200}
+        r = {"record_id": "atlas/skill:r1", "snippet": "s" * 200}
         out = pp.format_cap_hint(r)
-        assert out.startswith("r1 — ") and len(out) <= len("r1 — ") + 60
+        assert out.startswith("atlas/skill:r1 — ") and len(out) <= len("atlas/skill:r1 — ") + 60
 
     def test_broken_input(self):
         assert pp.format_cap_hint(None) == ""
@@ -692,7 +693,7 @@ class TestRunSemanticRouting:
 
     def test_fired_telemetry_has_all_new_fields(self, tmp_path):
         fn = _mk_http(classify=_scores(("ui-frontend", 0.62)),
-                      search={"results": [{"record_id": "skill:frontend-design",
+                      search={"results": [{"record_id": "atlas/skill:frontend-design",
                                            "heading": "Frontend Design", "score": 0.8}]})
         assert pp.run({"prompt": NO_KEYWORD_PROMPT, "session_id": "s"},
                       http_fn=fn, **self._kw(tmp_path)) != ""
@@ -704,15 +705,15 @@ class TestRunSemanticRouting:
 
     def test_caps_via_daemon_with_heading(self, tmp_path):
         fn = _mk_http(classify=_scores(("ui-frontend", 0.62)),
-                      search={"results": [{"record_id": "skill:frontend-design",
+                      search={"results": [{"record_id": "atlas/skill:frontend-design",
                                            "heading": "Frontend Design Guide",
                                            "source_path": "y.md", "score": 0.8}]})
         out = pp.run({"prompt": NO_KEYWORD_PROMPT, "session_id": "s"},
                      http_fn=fn, **self._kw(tmp_path))
-        assert "skill:frontend-design — Frontend Design Guide" in out
+        assert "atlas/skill:frontend-design — Frontend Design Guide" in out
         ev = self._last_event(tmp_path)
         assert ev["caps_source"] == "daemon"
-        assert ev["caps"] == ["skill:frontend-design — Frontend Design Guide"]
+        assert ev["caps"] == ["atlas/skill:frontend-design — Frontend Design Guide"]
 
     def test_caps_daemon_error_falls_back_to_sqlite(self, tmp_path, monkeypatch, fake_atlas_db):
         monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
@@ -721,7 +722,7 @@ class TestRunSemanticRouting:
                      http_fn=fn, **self._kw(tmp_path))
         ev = self._last_event(tmp_path)
         assert ev["caps_source"] == "sqlite"
-        assert "skill:frontend-design" in out
+        assert "atlas/skill:frontend-design" in out
 
     def test_budget_guard_skips_all_daemon_calls(self, tmp_path, monkeypatch, fake_atlas_db):
         monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
@@ -763,6 +764,110 @@ class TestRunSemanticRouting:
         assert self._last_event(tmp_path)["caps_source"] in ("sqlite", "none")
         assert "ui-frontend" in out
 
+
+
+class TestV5CapsGating:
+    def _kw(self, tmp_path):
+        return dict(atlas_root="x", state_dir=str(tmp_path / "st"),
+                    log_path=str(tmp_path / "l"), now=1.0)
+
+    def _last_event(self, tmp_path):
+        return _json.loads((tmp_path / "l").read_text(encoding="utf-8").strip().splitlines()[-1])
+
+    def test_daemon_non_atlas_results_are_omitted(self, tmp_path):
+        fn = _mk_http(classify=_scores(("ui-frontend", 0.62)),
+                      search={"results": [
+                          {"record_id": "haupt-wiki/notes/gamma-ray", "heading": "Gamma Ray Telescope"},
+                          {"record_id": "wiki/concepts/random", "heading": "Random Note"},
+                      ]})
+        out = pp.run({"prompt": NO_KEYWORD_PROMPT, "session_id": "s"},
+                     http_fn=fn, **self._kw(tmp_path))
+        ctx = _json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        ev = self._last_event(tmp_path)
+        assert "VORAB-SUCHE" not in ctx
+        assert ev["caps"] == []
+        assert ev["caps_source"] == "none"
+        assert ev["caps_raw_count"] == 2
+
+    def test_daemon_mixed_results_keep_only_atlas_ordered_max_three(self, tmp_path):
+        results = [
+            {"record_id": "haupt-wiki/notes/a", "heading": "A"},
+            {"record_id": "atlas/skill:first", "heading": "First"},
+            {"record_id": "atlas/plugin:second", "heading": "Second"},
+            {"record_id": "wiki/other", "heading": "Other"},
+            {"record_id": "atlas/subagent:third", "heading": "Third"},
+            {"record_id": "atlas/project-deep:fourth", "heading": "Fourth"},
+        ]
+        fn = _mk_http(classify=_scores(("ui-frontend", 0.62)), search={"results": results})
+        out = pp.run({"prompt": NO_KEYWORD_PROMPT, "session_id": "s"},
+                     http_fn=fn, **self._kw(tmp_path))
+        ev = self._last_event(tmp_path)
+        assert ev["caps"] == [
+            "atlas/skill:first — First",
+            "atlas/plugin:second — Second",
+            "atlas/subagent:third — Third",
+        ]
+        assert "atlas/project-deep:fourth" not in out
+        assert ev["caps_raw_count"] == 6
+
+    def test_heading_three_dashes_falls_back_to_snippet_then_record_id(self):
+        assert pp.format_cap_hint({"record_id": "atlas/skill:x", "heading": "---", "snippet": "Useful Hint"}) == \
+            "atlas/skill:x — Useful Hint"
+        assert pp.format_cap_hint({"record_id": "atlas/skill:x", "heading": "---", "snippet": "###"}) == \
+            "atlas/skill:x"
+
+    def test_caps_raw_count_daemon_path(self, tmp_path):
+        fn = _mk_http(classify=_scores(("ui-frontend", 0.62)),
+                      search={"results": [{"record_id": "atlas/skill:frontend-design", "heading": "Frontend"}]})
+        pp.run({"prompt": NO_KEYWORD_PROMPT, "session_id": "s"}, http_fn=fn, **self._kw(tmp_path))
+        ev = self._last_event(tmp_path)
+        assert ev["caps_source"] == "daemon"
+        assert ev["caps_raw_count"] == 1
+
+    def test_caps_raw_count_sqlite_path(self, tmp_path, monkeypatch, fake_atlas_db):
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
+        fn = _mk_http(classify=_scores(("ui-frontend", 0.62)), search=ConnectionError("down"))
+        pp.run({"prompt": KEYWORD_UI_PROMPT, "session_id": "s"}, http_fn=fn, **self._kw(tmp_path))
+        ev = self._last_event(tmp_path)
+        assert ev["caps_source"] == "sqlite"
+        assert ev["caps_raw_count"] >= ev["caps_count"] >= 1
+
+    def test_extract_query_no_label_prepend_and_new_stopwords(self):
+        # v5: KEIN Voranstellen der Domain-Labels mehr; die neuen Füllwort-
+        # Stopwörter (aus Live-Telemetrie) fliegen raus.
+        q = pp.extract_query("einfach jetzt gerne eigentlich vielleicht okay sagen schauen "
+                             "erstmal wirklich vielen dank danke super würde wuerde möchte "
+                             "moechte sollte irgendwie quasi component layout bauen")
+        assert set(q.split()) == {"component", "layout", "bauen"}
+        assert "ui-frontend" not in q  # Label-Präfix ist weg
+
+    def test_thin_query_suppresses_vertiefung_line(self, tmp_path, monkeypatch):
+        # Live-Smoke 2026-07-07: Junk-Prompt ließ nur EIN Token übrig ->
+        # memory_search_tool("weiter") ist Rauschen. Unter 2 Content-Tokens
+        # entfällt die Vertiefungszeile (der RAG-Auftrag selbst bleibt).
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)
+        out = pp.run({"prompt": "so super vielen dank dann schauen wir einfach mal weiter",
+                      "session_id": "s"}, http_fn=_mk_http(), **self._kw(tmp_path))
+        ctx = _json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        assert "memory_search_tool(" not in ctx
+        assert "RAG-AUFTRAG" in ctx
+
+    def test_extract_query_keeps_domainlike_content_words(self):
+        # "frontend"/"workflow" als CONTENT sind hochsignifikante Suchbegriffe —
+        # nur das VORANSTELLEN der Label-Namen war das Problem, nicht die Wörter.
+        q = pp.extract_query("verbessere das frontend styling im workflow ordner")
+        words = set(q.split())
+        assert "frontend" in words and "workflow" in words
+
+    def test_daemon_search_overfetches_k_12(self, tmp_path):
+        bodies = []
+        def fn(url, body, timeout):
+            if url.endswith("/search"):
+                bodies.append(body)
+                return {"results": []}
+            return _scores(("ui-frontend", 0.62))
+        pp.run({"prompt": NO_KEYWORD_PROMPT, "session_id": "s"}, http_fn=fn, **self._kw(tmp_path))
+        assert bodies and bodies[-1]["k"] == 12
 
 class TestSessionSanitize:
     def test_no_path_traversal(self, tmp_path):
@@ -955,7 +1060,7 @@ class TestStdinEncodingE2E:
         assert out.strip(), f"Hook feuerte nicht (stderr: {proc.stderr.decode('utf-8', 'replace')[:200]})"
         ctx = _json.loads(out)["hookSpecificOutput"]["additionalContext"]
         assert "Ã" not in ctx                       # kein cp1252-Mojibake
-        assert "möchte" in ctx                       # Query trägt das echte Wort
+        assert "Oberfläche" in ctx                   # Query trägt weiter ein echtes Umlaut-Wort
         assert 'domain="ui-frontend"' in ctx         # Umlaut-Keyword "oberfläche" matcht
 
     def test_umlauts_survive_into_telemetry(self, tmp_path):

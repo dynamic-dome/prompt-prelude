@@ -47,6 +47,21 @@ den In-Process-Tests nicht ersetzen können. Telemetrie v4 — v1-v3-Daten sind 
 Routing-/Compliance-Auswertungen Mojibake-vergiftet, NICHT mit v4 mischen.
 **Offen:** Threshold-Kalibrierung + eval_compliance nach ~1 Woche v4-Daten neu fahren.
 
+## Befund 6 (2026-07-07): general-Fallback injizierte ungefiltertes Rauschen
+Der v3-Breitband-Fallback nahm blind die Top-3 von `/search` — bei Smalltalk-/
+Junk-Queries irrelevante Wiki-Notizen (Live: Gammateleskop-Vorlesung + Flughafen-
+Roboter auf einen Projekt-Prompt, gematcht übers Mojibake-Fragment "Flug").
+Drei Ursachen: kein Relevanz-Gate, Index-Scope = ganzer Atlas statt Capabilities,
+Domain-Labels verschmutzten die Query. Score-Gate unmöglich: `/search`-Scores
+sind RRF-Rang-Fusion (~0.014–0.023, gut wie Müll identisch — gemessen).
+**Umgesetzt (v5, via Codex-Builder + Claude-Review):** atlas/-Präfix-Filter mit
+k=12-Überholung (Probe: gute Queries 1–2 atlas/-Treffer in Top-10, Junk 0 —
+der Präfix-Filter IST das Gate), "---"-Heading-Fallback, Query ohne
+Label-Präfix + erweiterte Stopwörter, `caps_raw_count`-Telemetrie,
+Vertiefungszeile erst ab 2 Content-Tokens. Leere Caps sind gewollt besser
+als falsche. Codex-Scope-Creep (Sandbox-Hacks in conftest, Überfiltern von
+Content-Wörtern wie "frontend") im Review zurückgebaut.
+
 ## Status (aktualisiert 2026-07-02 abend, Iteration 1)
 - Befund 1: `domain+phase`-Key + RAG-Bezug-Re-Arm umgesetzt (frühere Session).
   **Offen:** Re-Arm nach N Prompts (State-Format `set` → `{key: fired_at}`) —
