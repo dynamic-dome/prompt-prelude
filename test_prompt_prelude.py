@@ -271,7 +271,9 @@ class TestTelemetry:
         log = os.path.join(tmp_state_dir, "t.jsonl")
         pp.log_telemetry({"a": 1}, log)
         ev = _json.loads(open(log, encoding="utf-8").read().strip())
-        assert ev["v"] == pp.TELEMETRY_SCHEMA_VERSION == 3
+        # v4 = Iteration 3 (stdin-UTF-8-Fix): Live-Daten davor sind Mojibake-
+        # vergiftet, Auswertungen NIE über die Versionsgrenze mischen.
+        assert ev["v"] == pp.TELEMETRY_SCHEMA_VERSION == 4
 
 
 class TestExtractQuery:
@@ -908,3 +910,57 @@ class TestV3TopicDedupe:
         p2 = {"prompt": "style den footer button mit css und mach das interface moderner", "session_id": "s"}
         assert pp.run(p1, http_fn=_mk_http(), **kw) != ""
         assert pp.run(p2, http_fn=_mk_http(), **kw) != ""   # anderes Thema, gleiche Domain -> feuert
+
+
+# ===========================================================================
+# Iteration 3 (v4): stdin-Encoding. Live-Bug 2026-07-06: Python dekodierte
+# Pipe-stdin auf Windows als cp1252 -> JEDER Umlaut kam als Mojibake an
+# (0/208 v3-Events mit korrekten Umlauten, "möchte" -> "mÃ¶chte" -> Token
+# "chte"). Umlaut-Keywords tot, Daemon-Klassifikation auf Müll-Text (1/123
+# daemon-Routings), Queries verstümmelt. In-Process-Tests (io.StringIO)
+# KÖNNEN das nicht fangen — nur ein echter Subprocess mit UTF-8-Bytes auf
+# stdin geht den Live-Pfad (vgl. eval_routing.py: 18/20 in-process, live 1/123).
+# ===========================================================================
+
+class TestStdinEncodingE2E:
+    # Umlaut in einem ui-Keyword ("oberfläche") UND im Query-Vokabular:
+    # mit dem Bug wird daraus general + "chte"-Tokens, korrekt dekodiert
+    # matcht die ui-frontend-Domain und die Query trägt "möchte".
+    UMLAUT_PROMPT = "Ich möchte die Oberfläche gründlich überarbeiten und verschönern"
+
+    def _run_hook_subprocess(self, tmp_path, prompt):
+        """Kopiert das Script nach tmp (State + Telemetrie landen NEBEN der
+        Kopie -> vollständig isoliert) und füttert UTF-8-Bytes durch echtes
+        Subprocess-stdin. Env stellt den Live-Hook nach: kein PYTHONUTF8/
+        PYTHONIOENCODING (settings.json setzt keins), Daemon-URL tot."""
+        import os as _os, shutil, subprocess, sys as _sys
+        script = tmp_path / "prompt_prelude.py"
+        shutil.copy(_os.path.abspath(pp.__file__), str(script))
+        env = dict(_os.environ,
+                   ATLAS_DAEMON_URL="http://127.0.0.1:9",  # tot -> fail-soft
+                   ATLAS_DAEMON_TIMEOUT="0.05")
+        env.pop("PYTHONUTF8", None)
+        env.pop("PYTHONIOENCODING", None)
+        payload = _json.dumps({"prompt": prompt, "session_id": "e2e"}, ensure_ascii=False)
+        proc = subprocess.run([_sys.executable, str(script)],
+                              input=payload.encode("utf-8"),
+                              capture_output=True, timeout=30, env=env,
+                              cwd=str(tmp_path))
+        return proc, tmp_path / "prompt_prelude.jsonl"
+
+    def test_umlauts_survive_real_stdin(self, tmp_path):
+        proc, log = self._run_hook_subprocess(tmp_path, self.UMLAUT_PROMPT)
+        assert proc.returncode == 0
+        out = proc.stdout.decode("utf-8")
+        assert out.strip(), f"Hook feuerte nicht (stderr: {proc.stderr.decode('utf-8', 'replace')[:200]})"
+        ctx = _json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        assert "Ã" not in ctx                       # kein cp1252-Mojibake
+        assert "möchte" in ctx                       # Query trägt das echte Wort
+        assert 'domain="ui-frontend"' in ctx         # Umlaut-Keyword "oberfläche" matcht
+
+    def test_umlauts_survive_into_telemetry(self, tmp_path):
+        proc, log = self._run_hook_subprocess(tmp_path, self.UMLAUT_PROMPT)
+        assert proc.returncode == 0
+        ev = _json.loads(log.read_text(encoding="utf-8").strip().splitlines()[-1])
+        assert "möchte" in ev["prompt_preview"]
+        assert "Ã" not in ev["prompt_preview"]

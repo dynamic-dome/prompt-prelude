@@ -289,10 +289,13 @@ def cleanup_state(state_dir, now, max_age_days=7):
         pass
 
 
-# Schema-Version an jedem Event: v3 = Iteration 2 (general-Fallback: breit feuern,
-# sichtbare systemMessage-Zeile, Dedupe pro Thema). v2 = Iteration 1 (imperatives
-# Wording, machine_prompt-Skip). v1 = ohne "v". Auswertungen NIE über Versionen mischen.
-TELEMETRY_SCHEMA_VERSION = 3
+# Schema-Version an jedem Event: v4 = Iteration 3 (stdin-UTF-8-Fix: alle Events
+# davor sind Mojibake-vergiftet — Umlaute kamen als cp1252-Bytes an, 0/208
+# v3-Events mit korrekten Umlauten). v3 = Iteration 2 (general-Fallback: breit
+# feuern, sichtbare systemMessage-Zeile, Dedupe pro Thema). v2 = Iteration 1
+# (imperatives Wording, machine_prompt-Skip). v1 = ohne "v".
+# Auswertungen NIE über Versionen mischen.
+TELEMETRY_SCHEMA_VERSION = 4
 
 
 def log_telemetry(record, log_path):
@@ -660,13 +663,30 @@ def _default_log_path():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt_prelude.jsonl")
 
 
+def _read_stdin_utf8(max_bytes=200_000):
+    """stdin über den BYTE-Buffer lesen und explizit als UTF-8 dekodieren.
+
+    Live-Bug 2026-07-06: der Text-Stream sys.stdin dekodiert Pipe-stdin auf
+    Windows als cp1252 -> jeder Umlaut wurde Mojibake ("möchte" -> "mÃ¶chte",
+    0/208 v3-Events mit korrekten Umlauten). Folgeschäden: Umlaut-Keywords
+    matchten nie, die Daemon-Klassifikation lief auf Müll-Text (1/123
+    daemon-Routings) und extract_query produzierte Fragmente ("chte").
+    _force_utf8 hilft hier nicht zuverlässig (stdin-reconfigure greift nicht
+    auf allen Stream-Typen) — Bytes lesen + selbst dekodieren ist der einzig
+    robuste Pfad. Fail-soft: exotische stdins ohne .buffer -> Text-Stream."""
+    try:
+        return sys.stdin.buffer.read(max_bytes).decode("utf-8", "replace")
+    except Exception:
+        try:
+            return sys.stdin.read(max_bytes)
+        except Exception:
+            return ""
+
+
 def main():
     try:
         log_path = _default_log_path()
-        try:
-            raw = sys.stdin.read(200_000)  # bounded gegen riesigen Paste
-        except Exception:
-            raw = ""
+        raw = _read_stdin_utf8()  # bounded gegen riesigen Paste, explizit UTF-8
         try:
             payload = json.loads(raw or "{}")
         except Exception:

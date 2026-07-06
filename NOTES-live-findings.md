@@ -30,6 +30,23 @@ Fehl-Routings (ui-frontend auf Telemetrie-Reports) und verzerrte H4-Compliance.
 **Umgesetzt:** `machine_prompt`-Skip für `<task-notification>`, `<system-reminder>`,
 `<local-command-stdout>`, `<command-name>` am Prompt-Anfang.
 
+## Befund 5 (2026-07-06, KRITISCH): stdin wurde als cp1252 gelesen — alle Umlaute Mojibake
+`main()` las stdin über den Text-Stream; `_force_utf8` deckte nur stdout/stderr ab.
+Python dekodiert Pipe-stdin auf Windows als cp1252 → "möchte" kam als "mÃ¶chte" an.
+Telemetrie-Beweis: **0/208 v3-Events mit korrekten Umlauten**, 58 mit Mojibake-Artefakten.
+Kaskadenschäden: Umlaut-Keywords (`klär*`, `fähigkeiten`, `oberfläche`, …) matchten live NIE,
+Daemon-Klassifikation lief auf Müll-Text (nur **1/123** fired-Events via daemon geroutet,
+obwohl die Eval 18/20 zeigte), `extract_query` produzierte Fragmente ("chte", "hinzuf").
+
+**Meta-Lektion:** `eval_routing.py` füttert Prompts in-process (sauberes UTF-8) und konnte
+den Bug prinzipiell nicht finden — die Eval-vs-Live-Diskrepanz (18/20 vs 1/123) WAR das
+Signal. Entspricht der Lese-Seite von globaler CLAUDE.md §10 Regel 11 (cp1252-stdin).
+**Umgesetzt (Iteration 3, v4):** `_read_stdin_utf8()` liest `sys.stdin.buffer` (Bytes) und
+dekodiert explizit UTF-8; E2E-Test mit echtem Subprocess-stdin (`TestStdinEncodingE2E`),
+den In-Process-Tests nicht ersetzen können. Telemetrie v4 — v1-v3-Daten sind für
+Routing-/Compliance-Auswertungen Mojibake-vergiftet, NICHT mit v4 mischen.
+**Offen:** Threshold-Kalibrierung + eval_compliance nach ~1 Woche v4-Daten neu fahren.
+
 ## Status (aktualisiert 2026-07-02 abend, Iteration 1)
 - Befund 1: `domain+phase`-Key + RAG-Bezug-Re-Arm umgesetzt (frühere Session).
   **Offen:** Re-Arm nach N Prompts (State-Format `set` → `{key: fired_at}`) —

@@ -86,11 +86,21 @@ Kalibrierungs-Kandidaten — nach Datenlage nachziehen, zusätzlich
 0 False-Positives; die 2 Restfehler sind englische Prompts, bei denen beide
 Schichten blind sind (cross-linguale MiniLM-Schwaeche).
 
+## stdin-Encoding (v4, 2026-07-06)
+stdin wird über `sys.stdin.buffer` (Bytes) gelesen und explizit als UTF-8
+dekodiert. Vorher dekodierte der Text-Stream auf Windows als cp1252 — **jeder**
+Umlaut kam als Mojibake an (0/208 v3-Events korrekt), Umlaut-Keywords matchten
+nie, die Daemon-Klassifikation lief auf Müll-Text (1/123 daemon-Routings live
+vs. 18/20 in der In-Process-Eval). Regression wird durch einen echten
+Subprocess-E2E-Test gefangen (`TestStdinEncodingE2E`) — In-Process-stdin-Mocks
+können diese Bug-Klasse prinzipiell nicht sehen.
+
 ## Telemetrie
 `prompt_prelude.jsonl` (gitignored, bleibt lokal): pro Prompt ein Event mit
 skip-Grund ODER `fired`-Routing. Auditierbare Felder pro Event:
-- `v` (Schema-Version, aktuell 2): Events ohne `v` sind Alt-Schema (v1, vor
-  Iteration 1) — in A/B-Auswertungen nicht mit v2 mischen (anderes Wording!),
+- `v` (Schema-Version, aktuell 4 = stdin-UTF-8-Fix): v1-v3-Events sind
+  Mojibake-vergiftet (cp1252-stdin) — Routing-/Compliance-Auswertungen und
+  Threshold-Kalibrierung NUR innerhalb v4 fahren, nie über Versionen mischen,
 - `prompt_preview` (erste 80 Zeichen) auf allen Events,
 - bei `fired`: `matched_keywords` (Domain- + Planning-Treffer), `caps`,
   `caps_count` (0 = toter BM25-Lookup, fällt sofort auf), `rearmed`,
