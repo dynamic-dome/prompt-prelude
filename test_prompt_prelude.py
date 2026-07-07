@@ -359,7 +359,7 @@ class TestRun:
         monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
         kw = dict(atlas_root="x", state_dir=str(tmp_path / "st"), log_path=str(tmp_path / "l"), now=1.0)
         quiet = {"prompt": "baue ein responsive component layout für den header", "session_id": "s"}
-        planning = {"prompt": "lass uns ein konzept für das responsive layout planen", "session_id": "s"}
+        planning = {"prompt": "erstelle ein konzept für das responsive layout", "session_id": "s"}
         assert pp.run(quiet, **kw) != ""       # ui-frontend:quiet feuert
         assert pp.run(planning, **kw) != ""    # ui-frontend:planning feuert TROTZ gleicher Domain
         assert pp.run(quiet, **kw) == ""       # gleicher Key erneut = still
@@ -369,7 +369,7 @@ class TestRun:
         monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
         kw = dict(atlas_root="x", state_dir=str(tmp_path / "st"), log_path=str(tmp_path / "l"), now=1.0)
         first = {"prompt": "baue ein responsive component layout für den header", "session_id": "s"}
-        rag = {"prompt": "welche skills hast du für das frontend layout thema", "session_id": "s"}
+        rag = {"prompt": "prüfe welche skills du für das frontend layout thema hast", "session_id": "s"}
         assert pp.run(first, **kw) != ""
         assert pp.run(first, **kw) == ""   # normaler Dedupe greift weiter
         assert pp.run(rag, **kw) != ""     # expliziter RAG-Bezug feuert trotz Dedupe
@@ -417,6 +417,67 @@ class TestRun:
         assert ev["skip"] == "too_short"
         assert ev["prompt_preview"].startswith("mach schnell")
 
+class TestPrecisionGate:
+    def _kw(self, tmp_path):
+        return dict(atlas_root="x", state_dir=str(tmp_path / "st"),
+                    log_path=str(tmp_path / "l"),
+                    decision_log_path=str(tmp_path / "prelude_decisions.jsonl"),
+                    now=1.0)
+
+    def _last_decision(self, tmp_path):
+        return _json.loads((tmp_path / "prelude_decisions.jsonl")
+                           .read_text(encoding="utf-8").strip().splitlines()[-1])
+
+    def test_code_prompt_with_path_and_fence_emits(self, tmp_path, monkeypatch, fake_atlas_db):
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
+        prompt = ("Bitte implementiere das in prompt_prelude.py:\n"
+                  "```python\nprint('hello')\n```")
+        out = pp.run({"prompt": prompt, "session_id": "s"},
+                     http_fn=_mk_http(), **self._kw(tmp_path))
+        assert out != ""
+        decision = self._last_decision(tmp_path)
+        assert decision["decision"] == "emit"
+        assert decision["reason"] == "precision_gate_pass"
+
+    def test_budget_strategy_meta_question_without_work_signal_skips(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)
+        prompt = ("Wie würdest du strategisch mein Token-Budget für Analyse und "
+                  "Visualisierung planen, damit wir nicht pro Prompt 100 Tokens verschwenden?")
+        out = pp.run({"prompt": prompt, "session_id": "s"},
+                     http_fn=_mk_http(), **self._kw(tmp_path))
+        assert out == ""
+        decision = self._last_decision(tmp_path)
+        assert decision["decision"] == "skip"
+        assert decision["reason"] == "no_work_signal"
+
+    def test_short_confirmation_skips(self, tmp_path):
+        out = pp.run({"prompt": "ja mach", "session_id": "s"}, **self._kw(tmp_path))
+        assert out == ""
+        decision = self._last_decision(tmp_path)
+        assert decision["decision"] == "skip"
+        assert decision["reason"] == "too_short"
+
+    def test_prompt_containing_only_file_path_emits(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)
+        prompt = r"C:\Users\domes\AI\Hooks-bau\prompt-prelude-b2-gate\prompt_prelude.py"
+        out = pp.run({"prompt": prompt, "session_id": "s"},
+                     http_fn=_mk_http(), **self._kw(tmp_path))
+        assert out != ""
+        decision = self._last_decision(tmp_path)
+        assert decision["decision"] == "emit"
+        assert "file_path" in decision["work_signals"]
+
+    def test_documented_budget_strategy_false_positive_is_skipped(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)
+        prompt = ("Lohnt sich die Budget-Strategie für diese Session, oder sollten wir "
+                  "lieber anders planen, ohne direkt Daten-Viz-Skills zu ziehen?")
+        out = pp.run({"prompt": prompt, "session_id": "s"},
+                     http_fn=_mk_http(), **self._kw(tmp_path))
+        assert out == ""
+        decision = self._last_decision(tmp_path)
+        assert decision["decision"] == "skip"
+        assert decision["classification"]["phase"] == "planning"
+        assert decision["reason"] == "no_work_signal"
 
 class TestCleanupState:
     def test_removes_old_keeps_fresh(self, tmp_path):
@@ -470,7 +531,7 @@ class TestMain:
         self._isolate(monkeypatch, tmp_path)
         monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)  # hermetisch
         monkeypatch.setattr(sys, "stdin", io.StringIO(
-            _json.dumps({"prompt": "erzähl mir bitte was über das wetter morgen früh",
+            _json.dumps({"prompt": "erstelle bitte eine kurze notiz über das wetter morgen früh",
                          "session_id": "m"})))
         assert pp.main() == 0
         obj = _json.loads(capsys.readouterr().out.strip())
@@ -517,7 +578,7 @@ def _mk_http(classify=None, search=None, calls=None):
 
 # Prompt OHNE Keyword-Treffer (weder Domain noch Planning) — nur der Daemon
 # kann ihn routen. Lang genug für should_skip.
-NO_KEYWORD_PROMPT = "mach die seite bitte etwas schöner und deutlich moderner insgesamt"
+NO_KEYWORD_PROMPT = "erstelle die seite bitte etwas schöner und deutlich moderner insgesamt"
 # Prompt MIT eindeutigen ui-frontend-Keywords für Fallback-Tests.
 KEYWORD_UI_PROMPT = "baue ein responsive component layout für den header"
 
@@ -683,7 +744,7 @@ class TestRunSemanticRouting:
         # v3: weder Daemon (down) noch Keywords -> general-Fallback FEUERT jetzt,
         # A/B-Felder bleiben am fired-Event erhalten (routing_source=fallback).
         monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)  # hermetisch, keine caps
-        pp.run({"prompt": "erzähl mir bitte was über das wetter morgen früh", "session_id": "s"},
+        pp.run({"prompt": "erstelle bitte eine kurze notiz über das wetter morgen früh", "session_id": "s"},
                http_fn=_mk_http(), **self._kw(tmp_path))
         ev = self._last_event(tmp_path)
         assert ev["fired"] is True
@@ -846,7 +907,7 @@ class TestV5CapsGating:
         # memory_search_tool("weiter") ist Rauschen. Unter 2 Content-Tokens
         # entfällt die Vertiefungszeile (der RAG-Auftrag selbst bleibt).
         monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)
-        out = pp.run({"prompt": "so super vielen dank dann schauen wir einfach mal weiter",
+        out = pp.run({"prompt": "starte jetzt bitte einfach gerne okay super",
                       "session_id": "s"}, http_fn=_mk_http(), **self._kw(tmp_path))
         ctx = _json.loads(out)["hookSpecificOutput"]["additionalContext"]
         assert "memory_search_tool(" not in ctx
@@ -901,7 +962,7 @@ class TestV3GeneralFallback:
 
     def test_substantive_prompt_without_domain_fires_general(self, tmp_path, monkeypatch):
         monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)  # hermetisch
-        out = pp.run({"prompt": "erzähl mir bitte was über das wetter morgen früh", "session_id": "s"},
+        out = pp.run({"prompt": "erstelle bitte eine kurze notiz über das wetter morgen früh", "session_id": "s"},
                      http_fn=_mk_http(), **self._kw(tmp_path))
         assert out != ""
         ctx = _json.loads(out)["hookSpecificOutput"]["additionalContext"]
@@ -916,7 +977,7 @@ class TestV3GeneralFallback:
 
     def test_general_routing_line_present(self, tmp_path, monkeypatch):
         monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)
-        out = pp.run({"prompt": "erzähl mir bitte was über das wetter morgen früh", "session_id": "s"},
+        out = pp.run({"prompt": "erstelle bitte eine kurze notiz über das wetter morgen früh", "session_id": "s"},
                      http_fn=_mk_http(), **self._kw(tmp_path))
         ctx = _json.loads(out)["hookSpecificOutput"]["additionalContext"]
         assert "memory_search_tool" in ctx

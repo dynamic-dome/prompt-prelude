@@ -3,3 +3,5 @@ __pycache__/
 prompt_prelude.jsonl
 .dedupe/
 .agent-memory/
+prelude_decisions.jsonl
+pytest_tmp/

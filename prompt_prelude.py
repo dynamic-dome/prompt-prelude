@@ -44,10 +44,63 @@ def should_skip(prompt):
         return True, "machine_prompt"
     if s.lower() in TRIVIAL:
         return True, "trivial"
+    if detect_work_signals(s):
+        return False, ""
     if len(s) < MIN_PROMPT_LEN or len(s.split()) < 4:
         return True, "too_short"
     return False, ""
 
+
+
+PRECISION_CONFIDENCE_THRESHOLD = 0.45
+KEYWORD_DOMAIN_CONFIDENCE_BASE = 0.55
+KEYWORD_DOMAIN_CONFIDENCE_PER_HIT = 0.15
+WORK_SIGNAL_GENERAL_CONFIDENCE = 0.60
+
+FILE_PATH_RE = re.compile(
+    r"(?i)(?:[A-Z]:\\[^\s`]+|(?:\.{1,2}[\\/])?[\w.-]+[\\/][^\s`]+|"
+    r"[\w.-]+\.(?:py|js|ts|tsx|jsx|md|json|ya?ml|toml|css|html|sql|sh|ps1)\b)"
+)
+CODE_FENCE_RE = re.compile(r"```")
+INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+TASK_VERB_RE = re.compile(
+    r"(?i)\b(?:implement(?:iere|ieren|ier|e|en)?|fix(?:e|en)?|debug(?:ge|gen)?|"
+    r"baue|bau|build|add|write|edit|update|refactor(?:e|en)?|test(?:e|en)?|"
+    r"run|create|delete|patch(?:e|en)?|style|verbessere|überarbeit(?:e|en)?|ueberarbeit(?:e|en)?|"
+    r"schreib(?:e|en)?|ändere|aendere|"
+    r"ergänze|ergaenze|starte|erstelle|prüfe|pruefe)\b"
+)
+
+
+def detect_work_signals(prompt):
+    """Return concrete work-signal labels; fail-soft and conservative."""
+    text = prompt if isinstance(prompt, str) else ""
+    signals = []
+    if FILE_PATH_RE.search(text):
+        signals.append("file_path")
+    if CODE_FENCE_RE.search(text) or INLINE_CODE_RE.search(text):
+        signals.append("code")
+    if TASK_VERB_RE.search(text):
+        signals.append("task_verb")
+    return signals
+
+
+def domain_confidence(domain, routing_source, daemon_scores, keyword_hits, work_signals):
+    """Small confidence scalar for the precision gate; never throws."""
+    try:
+        if routing_source == "daemon" and daemon_scores:
+            for score in daemon_scores:
+                if score.get("name") == domain:
+                    return float(score.get("score", 0.0))
+            return 0.0
+        if routing_source == "keywords" and domain:
+            return min(1.0, KEYWORD_DOMAIN_CONFIDENCE_BASE +
+                       KEYWORD_DOMAIN_CONFIDENCE_PER_HIT * len(keyword_hits or []))
+        if routing_source == "fallback" and domain == "general" and work_signals:
+            return WORK_SIGNAL_GENERAL_CONFIDENCE
+        return 0.0
+    except Exception:
+        return 0.0
 
 # Keyword-Konvention: Wortgrenzen-Match (\b...\b). Ein trailing "*" macht das
 # Keyword zum Präfix-Stem (\bstem...), z.B. "implementier*" matcht "implementieren".
@@ -307,6 +360,27 @@ def log_telemetry(record, log_path):
     except Exception:
         pass
 
+
+
+def log_decision(record, decision_log_path):
+    try:
+        with open(decision_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def decision_record(decision, reason, *, now, session_id, prompt_preview,
+                    classification=None, work_signals=None):
+    return {
+        "t": now,
+        "decision": decision,
+        "reason": reason,
+        "session": session_id,
+        "prompt_preview": prompt_preview,
+        "classification": classification or {},
+        "work_signals": work_signals or [],
+    }
 
 ATLAS_ROOT_DEFAULT = r"C:\Users\domes\AI\agent-memory-atlas\.atlas-index"
 
@@ -604,17 +678,22 @@ def lookup_capabilities(terms, atlas_root, budget, http_fn=None, limit=3, daemon
     return caps, ("sqlite" if caps else "none"), raw_count
 
 
-def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=None):
+def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=None, decision_log_path=None):
     if not isinstance(payload, dict):
         return ""
     prompt = payload.get("prompt", "") or ""
     session_id = payload.get("session_id", "default") or "default"
     preview = str(prompt).strip()[:80]
+    decision_log_path = decision_log_path or _default_decision_log_path()
+    work_signals = detect_work_signals(prompt)
 
     skip, reason = should_skip(prompt)
     if skip:
         log_telemetry({"t": now, "skip": reason, "session": session_id,
                        "prompt_preview": preview}, log_path)
+        log_decision(decision_record("skip", reason, now=now, session_id=session_id,
+                                     prompt_preview=preview, work_signals=work_signals),
+                     decision_log_path)
         return ""
 
     budget = budget or DaemonBudget()
@@ -647,10 +726,43 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
     # Phase-Erkennung bleibt bewusst Keyword-basiert (nicht Daemon).
     phase, phase_hits = match_phase(prompt)
     routing = build_rag_routing(domain, phase)
+    confidence = domain_confidence(domain, routing_source, daemon_scores, dom_hits, work_signals)
+    classification = {
+        "domain": domain,
+        "phase": phase,
+        "routing_source": routing_source,
+        "confidence": round(confidence, 3),
+        "threshold": PRECISION_CONFIDENCE_THRESHOLD,
+        "daemon_top": ab["daemon_top"],
+        "keyword_domain": keyword_domain,
+        "matched_keywords": dom_hits + phase_hits,
+    }
+
+    if not work_signals:
+        log_telemetry({"t": now, "skip": "no_work_signal", "session": session_id,
+                       "prompt_preview": preview, **ab}, log_path)
+        log_decision(decision_record("skip", "no_work_signal", now=now,
+                                     session_id=session_id, prompt_preview=preview,
+                                     classification=classification,
+                                     work_signals=work_signals), decision_log_path)
+        return ""
+
+    if confidence < PRECISION_CONFIDENCE_THRESHOLD:
+        log_telemetry({"t": now, "skip": "low_domain_confidence", "session": session_id,
+                       "prompt_preview": preview, "confidence": round(confidence, 3), **ab}, log_path)
+        log_decision(decision_record("skip", "low_domain_confidence", now=now,
+                                     session_id=session_id, prompt_preview=preview,
+                                     classification=classification,
+                                     work_signals=work_signals), decision_log_path)
+        return ""
+
 
     if not routing:
         log_telemetry({"t": now, "skip": "no_routing", "session": session_id,
                        "prompt_preview": preview, **ab}, log_path)
+        log_decision(decision_record("skip", "no_routing", now=now, session_id=session_id,
+                                     prompt_preview=preview, classification=classification,
+                                     work_signals=work_signals), decision_log_path)
         return ""
 
     cleanup_state(state_dir, now)
@@ -664,6 +776,9 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
         else:
             log_telemetry({"t": now, "skip": "deduped", "key": key, "session": session_id,
                            "prompt_preview": preview, **ab}, log_path)
+            log_decision(decision_record("skip", "deduped", now=now, session_id=session_id,
+                                         prompt_preview=preview, classification=classification,
+                                         work_signals=work_signals), decision_log_path)
             return ""
 
     terms = extract_query(prompt)
@@ -681,6 +796,10 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
     if out:
         fired.add(key)
         save_fired(session_id, state_dir, fired)
+        log_decision(decision_record("emit", "precision_gate_pass", now=now,
+                                     session_id=session_id, prompt_preview=preview,
+                                     classification=classification,
+                                     work_signals=work_signals), decision_log_path)
         log_telemetry({"t": now, "fired": True, "domain": domain, "phase": phase,
                        "key": key, "caps": caps, "caps_count": len(caps),
                        "caps_raw_count": caps_raw_count,
@@ -697,6 +816,10 @@ def _default_state_dir():
 
 def _default_log_path():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt_prelude.jsonl")
+
+
+def _default_decision_log_path():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "prelude_decisions.jsonl")
 
 
 def _read_stdin_utf8(max_bytes=200_000):
