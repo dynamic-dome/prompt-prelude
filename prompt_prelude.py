@@ -261,6 +261,21 @@ def make_output(additional_context, system_message=None):
     return json.dumps(out, ensure_ascii=False)
 
 
+def make_skip_status(reason, domain=None, phase=None):
+    """Sichtbare Skip-Zeile (systemMessage-only, KEIN additionalContext).
+
+    Live-Befund 2026-07-09: nach dem B2-Präzisions-Gate fühlte sich der Hook
+    tot an — kein Feuern, keine Zeile, keine Bestätigung, dass er überhaupt
+    lief. Darum sieht der User jetzt auf jedem substanziellen Prompt die
+    Entscheidung; Claudes Kontext bleibt unberührt (kein hookSpecificOutput).
+    Nur für post-classify-Skips gedacht — raw/trivial/too_short/machine_prompt
+    bleiben komplett still (Konversations-/Maschinen-Rauschen)."""
+    detail = f" · {domain}" if domain else ""
+    if domain and phase and phase != "quiet":
+        detail += f":{phase}"
+    return make_output(None, system_message=f"prelude ▸ skip · {reason}{detail}")
+
+
 def topic_signature(prompt):
     """Kurzer stabiler Hash der signifikanten Tokens eines Prompts.
 
@@ -745,7 +760,7 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
                                      session_id=session_id, prompt_preview=preview,
                                      classification=classification,
                                      work_signals=work_signals), decision_log_path)
-        return ""
+        return make_skip_status("no_work_signal", domain, phase)
 
     if confidence < PRECISION_CONFIDENCE_THRESHOLD:
         log_telemetry({"t": now, "skip": "low_domain_confidence", "session": session_id,
@@ -754,7 +769,7 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
                                      session_id=session_id, prompt_preview=preview,
                                      classification=classification,
                                      work_signals=work_signals), decision_log_path)
-        return ""
+        return make_skip_status("low_domain_confidence", domain, phase)
 
 
     if not routing:
@@ -763,7 +778,7 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
         log_decision(decision_record("skip", "no_routing", now=now, session_id=session_id,
                                      prompt_preview=preview, classification=classification,
                                      work_signals=work_signals), decision_log_path)
-        return ""
+        return make_skip_status("no_routing", domain, phase)
 
     cleanup_state(state_dir, now)
 
@@ -779,7 +794,7 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
             log_decision(decision_record("skip", "deduped", now=now, session_id=session_id,
                                          prompt_preview=preview, classification=classification,
                                          work_signals=work_signals), decision_log_path)
-            return ""
+            return make_skip_status("deduped", domain, phase)
 
     terms = extract_query(prompt)
     caps, caps_source, caps_raw_count = lookup_capabilities(terms, atlas_root,

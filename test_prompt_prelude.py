@@ -343,7 +343,11 @@ class TestRun:
         kw = dict(atlas_root="x", state_dir=str(tmp_path / "st"), log_path=str(tmp_path / "l"), now=1.0)
         p = {"prompt": "baue ein responsive component layout für den header", "session_id": "s"}
         assert pp.run(p, **kw) != ""
-        assert pp.run(p, **kw) == ""   # zweiter UI-Prompt derselben Session = still
+        # T-31: zweiter UI-Prompt derselben Session = kein Kontext mehr,
+        # aber sichtbare Skip-Zeile (systemMessage-only)
+        obj = _json.loads(pp.run(p, **kw))
+        assert obj["systemMessage"].startswith("prelude ▸ skip · deduped")
+        assert "hookSpecificOutput" not in obj
 
     def test_corrupt_payload_no_throw(self, tmp_path):
         out = pp.run({}, atlas_root="x", state_dir=str(tmp_path), log_path=str(tmp_path / "l"), now=1.0)
@@ -362,7 +366,10 @@ class TestRun:
         planning = {"prompt": "erstelle ein konzept für das responsive layout", "session_id": "s"}
         assert pp.run(quiet, **kw) != ""       # ui-frontend:quiet feuert
         assert pp.run(planning, **kw) != ""    # ui-frontend:planning feuert TROTZ gleicher Domain
-        assert pp.run(quiet, **kw) == ""       # gleicher Key erneut = still
+        # gleicher Key erneut = kein Kontext, nur sichtbare Skip-Zeile (T-31)
+        obj = _json.loads(pp.run(quiet, **kw))
+        assert obj["systemMessage"].startswith("prelude ▸ skip · deduped")
+        assert "hookSpecificOutput" not in obj
 
     # --- Befund 3: expliziter RAG-Bezug re-armt den Dedupe ---
     def test_rag_reference_rearms_dedupe(self, tmp_path, monkeypatch, fake_atlas_db):
@@ -371,8 +378,10 @@ class TestRun:
         first = {"prompt": "baue ein responsive component layout für den header", "session_id": "s"}
         rag = {"prompt": "prüfe welche skills du für das frontend layout thema hast", "session_id": "s"}
         assert pp.run(first, **kw) != ""
-        assert pp.run(first, **kw) == ""   # normaler Dedupe greift weiter
-        assert pp.run(rag, **kw) != ""     # expliziter RAG-Bezug feuert trotz Dedupe
+        # normaler Dedupe greift weiter (nur noch Skip-Zeile, kein Kontext)
+        assert "hookSpecificOutput" not in _json.loads(pp.run(first, **kw))
+        rag_obj = _json.loads(pp.run(rag, **kw))
+        assert "hookSpecificOutput" in rag_obj   # expliziter RAG-Bezug feuert trotz Dedupe
 
     # --- Befund 4: fired-Event ist auditierbar ---
     def test_fired_event_telemetry_fields(self, tmp_path, monkeypatch, fake_atlas_db):
@@ -445,7 +454,9 @@ class TestPrecisionGate:
                   "Visualisierung planen, damit wir nicht pro Prompt 100 Tokens verschwenden?")
         out = pp.run({"prompt": prompt, "session_id": "s"},
                      http_fn=_mk_http(), **self._kw(tmp_path))
-        assert out == ""
+        obj = _json.loads(out)
+        assert obj["systemMessage"].startswith("prelude ▸ skip · no_work_signal")
+        assert "hookSpecificOutput" not in obj   # T-31: Skip-Zeile injiziert NIE Kontext
         decision = self._last_decision(tmp_path)
         assert decision["decision"] == "skip"
         assert decision["reason"] == "no_work_signal"
@@ -473,7 +484,9 @@ class TestPrecisionGate:
                   "lieber anders planen, ohne direkt Daten-Viz-Skills zu ziehen?")
         out = pp.run({"prompt": prompt, "session_id": "s"},
                      http_fn=_mk_http(), **self._kw(tmp_path))
-        assert out == ""
+        obj = _json.loads(out)
+        assert obj["systemMessage"].startswith("prelude ▸ skip · no_work_signal")
+        assert "hookSpecificOutput" not in obj
         decision = self._last_decision(tmp_path)
         assert decision["decision"] == "skip"
         assert decision["classification"]["phase"] == "planning"
@@ -1019,10 +1032,24 @@ class TestV3SystemMessage:
 
     def test_make_output_system_message_only(self):
         # Codex-Nit #3: Helfer-Kontrakt gepinnt — systemMessage OHNE Kontext
-        # erzeugt ein systemMessage-only-JSON (run() nutzt das nie, aber der
-        # Helfer darf es und das Verhalten ist jetzt festgeschrieben).
+        # erzeugt ein systemMessage-only-JSON (seit T-31 der Pfad für die
+        # sichtbaren Skip-Zeilen via make_skip_status).
         obj = _json.loads(pp.make_output("", system_message="prelude ▸ x"))
         assert obj == {"systemMessage": "prelude ▸ x"}
+        assert "hookSpecificOutput" not in obj
+
+    # --- T-31: sichtbare Skip-Zeile (systemMessage-only) ---
+    def test_make_skip_status_with_domain_and_phase(self):
+        obj = _json.loads(pp.make_skip_status("deduped", "ui-frontend", "planning"))
+        assert obj == {"systemMessage": "prelude ▸ skip · deduped · ui-frontend:planning"}
+
+    def test_make_skip_status_quiet_phase_omitted(self):
+        obj = _json.loads(pp.make_skip_status("no_work_signal", "workflow", "quiet"))
+        assert obj == {"systemMessage": "prelude ▸ skip · no_work_signal · workflow"}
+
+    def test_make_skip_status_never_injects_context(self):
+        obj = _json.loads(pp.make_skip_status("no_routing"))
+        assert obj == {"systemMessage": "prelude ▸ skip · no_routing"}
         assert "hookSpecificOutput" not in obj
 
     def test_fire_emits_visible_system_message(self, tmp_path, monkeypatch, fake_atlas_db):
@@ -1035,7 +1062,9 @@ class TestV3SystemMessage:
         assert "caps=" in obj["systemMessage"]
 
     def test_skip_has_no_output_no_system_message(self, tmp_path):
-        # Q1: sichtbare Zeile NUR wenn der Hook feuert
+        # T-31-Grenze: trivial/too_short/raw/machine_prompt bleiben KOMPLETT
+        # still — die sichtbare Skip-Zeile gibt es nur für substanzielle
+        # Prompts, die es bis zur Klassifikation schaffen.
         assert pp.run({"prompt": "ok", "session_id": "s"}, **self._kw(tmp_path)) == ""
 
 
@@ -1067,7 +1096,10 @@ class TestV3TopicDedupe:
         kw = self._kw(tmp_path)
         p = {"prompt": "baue ein responsive component layout für den header bereich", "session_id": "s"}
         assert pp.run(p, http_fn=_mk_http(), **kw) != ""
-        assert pp.run(p, http_fn=_mk_http(), **kw) == ""   # exakt gleiches Thema -> still
+        # exakt gleiches Thema -> kein Kontext mehr, nur Skip-Zeile (T-31)
+        obj = _json.loads(pp.run(p, http_fn=_mk_http(), **kw))
+        assert obj["systemMessage"].startswith("prelude ▸ skip · deduped")
+        assert "hookSpecificOutput" not in obj
 
     def test_different_topics_same_domain_both_fire(self, tmp_path, monkeypatch, fake_atlas_db):
         monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
