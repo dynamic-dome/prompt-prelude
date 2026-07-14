@@ -448,6 +448,20 @@ class TestPrecisionGate:
         assert decision["decision"] == "emit"
         assert decision["reason"] == "precision_gate_pass"
 
+    def test_daemon_routing_in_new_threshold_band_emits(self, tmp_path, monkeypatch, fake_atlas_db):
+        # T-8-Regression: TH_ACCEPT=0.40 akzeptiert Daemon-Scores in [0.40,0.45) —
+        # das Praezisions-Gate darf diese Routings nicht wieder verschlucken.
+        # PRECISION_CONFIDENCE_THRESHOLD muss mit TH_ACCEPT mitziehen.
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
+        fn = _mk_http(classify=_scores(("debug", 0.42), ("code-impl", 0.30)),
+                      search={"results": []})
+        out = pp.run({"prompt": "fixe den server crash beim start", "session_id": "s"},
+                     http_fn=fn, **self._kw(tmp_path))
+        assert out != ""
+        decision = self._last_decision(tmp_path)
+        assert decision["decision"] == "emit"
+        assert decision["classification"]["routing_source"] == "daemon"
+
     def test_budget_strategy_meta_question_without_work_signal_skips(self, tmp_path, monkeypatch):
         monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)
         prompt = ("Wie würdest du strategisch mein Token-Budget für Analyse und "
