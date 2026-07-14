@@ -357,14 +357,18 @@ def cleanup_state(state_dir, now, max_age_days=7):
         pass
 
 
-# Schema-Version an jedem Event: v5 = Caps-Gating atlas/-only plus Query-Cleanup
-# (Caps-Semantik geändert: A/B-Daten NIE über v4/v5 mischen). v4 = stdin-
+# Schema-Version an jedem Event: v6 = Threshold-Kalibrierung T-8 (TH_ACCEPT
+# 0.45->0.40, TH_CLEAR 0.50->0.45; Daemon-Routing-Population geändert). Achtung:
+# v5 ist intern INHOMOGEN — v5a bis 2026-07-07 22:35 (vor T-30), v5b danach
+# (Präzisions-Gate T-30 + Skip-Zeile T-31 liefen ohne Bump; fired-Population
+# durch no_work_signal-Skips verschoben). v5 = Caps-Gating atlas/-only plus
+# Query-Cleanup (Caps-Semantik geändert: A/B-Daten NIE über v4/v5 mischen). v4 = stdin-
 # UTF-8-Fix: alle Events davor sind Mojibake-vergiftet — Umlaute kamen als
 # cp1252-Bytes an, 0/208 v3-Events mit korrekten Umlauten. v3 = Iteration 2
 # (general-Fallback: breit feuern, sichtbare systemMessage-Zeile, Dedupe pro
 # Thema). v2 = Iteration 1 (imperatives Wording, machine_prompt-Skip). v1 =
 # ohne "v". Auswertungen NIE über Versionen mischen.
-TELEMETRY_SCHEMA_VERSION = 5
+TELEMETRY_SCHEMA_VERSION = 6
 
 
 def log_telemetry(record, log_path):
@@ -488,9 +492,14 @@ CLASSIFY_PROMPT_CAP = 500            # Query-Kappung für /classify
 # gegen echte Prompts nachziehen). Kalibriert 2026-07-02 gegen die 20-Prompt-Eval:
 # 0.35 liess "build neu starten"->code-impl (0.360) und "guide für git" (0.373)
 # durch; 0.42 killt beide und behält die semantischen Gewinne (debug 0.466/0.520).
-TH_ACCEPT = 0.45  # Kalibrierungs-Kandidat: Mindest-Score des Bestplatzierten
-TH_MARGIN = 0.05  # Kalibrierungs-Kandidat: Mindestabstand zum Zweitplatzierten
-TH_CLEAR = 0.50   # Kalibrierungs-Kandidat: ab hier gilt der Score auch ohne Margin
+# T-8-Kalibrierung 2026-07-14 auf 181 Live-Decisions mit daemon_top (v5b):
+# akzeptierte Daemon-Routings hatten min-Score 0.46, fallback-Median lag bei
+# 0.29 — 0.45 lehnte plausible 0.40-0.47-Grenzfälle ab (Stichprobe manuell
+# gesichtet). 0.40/0.45 hebt Daemon-Routings ~+20% (35->42); Fehlrouting-Kosten
+# sind niedrig, weil das atlas/-Caps-Gate Junk ohnehin auf 0 filtert.
+TH_ACCEPT = 0.40  # Mindest-Score des Bestplatzierten
+TH_MARGIN = 0.05  # Mindestabstand zum Zweitplatzierten
+TH_CLEAR = 0.45   # ab hier gilt der Score auch ohne Margin
 TH_ANCHOR_VETO = 0.12  # Null-Anker naeher als das am Sieger -> unsicher, ablehnen
                        # (0.10 verfehlte den Kalibrier-Fall um 0.005: workflow 0.547,
                        #  meta-none 0.442 auf Platz 3)

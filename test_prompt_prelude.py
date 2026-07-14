@@ -273,7 +273,7 @@ class TestTelemetry:
         ev = _json.loads(open(log, encoding="utf-8").read().strip())
         # v4 = Iteration 3 (stdin-UTF-8-Fix): Live-Daten davor sind Mojibake-
         # vergiftet, Auswertungen NIE über die Versionsgrenze mischen.
-        assert ev["v"] == pp.TELEMETRY_SCHEMA_VERSION == 5
+        assert ev["v"] == pp.TELEMETRY_SCHEMA_VERSION == 6
 
 
 class TestExtractQuery:
