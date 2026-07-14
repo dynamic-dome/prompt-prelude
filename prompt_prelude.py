@@ -71,7 +71,11 @@ TASK_VERB_RE = re.compile(
     r"baue|bau|build|add|write|edit|update|refactor(?:e|en)?|test(?:e|en)?|"
     r"run|create|delete|patch(?:e|en)?|style|verbessere|überarbeit(?:e|en)?|ueberarbeit(?:e|en)?|"
     r"schreib(?:e|en)?|ändere|aendere|"
-    r"ergänze|ergaenze|starte|erstelle|prüfe|pruefe)\b"
+    r"ergänze|ergaenze|starte|erstelle|prüfe|pruefe|"
+    # T-8 2026-07-14: Research-/Review-Verben fehlten — echte Auftraege wie
+    # "recherchiere ..." / "reviewe ..." liefen als no_work_signal-Skip.
+    r"recherchier(?:e|en)?|review(?:e|en)?|vergleich(?:e|en)?|"
+    r"analysier(?:e|en)?|untersuch(?:e|en)?|evaluier(?:e|en)?)\b"
 )
 
 

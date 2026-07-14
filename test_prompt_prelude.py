@@ -462,6 +462,27 @@ class TestPrecisionGate:
         assert decision["decision"] == "emit"
         assert decision["classification"]["routing_source"] == "daemon"
 
+    def test_research_and_review_verbs_are_work_signals(self):
+        # T-8-Befund: echte Arbeitsauftraege wie "recherchiere ..." / "reviewe ..."
+        # liefen als no_work_signal-Skip, weil die Verben im TASK_VERB_RE fehlten.
+        for prompt in ("recherchiere die besten embedding-modelle",
+                       "reviewe die redesign-abgabe gegen die gates",
+                       "vergleiche die beiden ansaetze",
+                       "analysiere die telemetrie-daten",
+                       "untersuche den routing-pfad",
+                       "evaluiere die neuen thresholds"):
+            assert "task_verb" in pp.detect_work_signals(prompt), prompt
+
+    def test_research_prompt_passes_gate(self, tmp_path, monkeypatch, fake_atlas_db):
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
+        out = pp.run({"prompt": "recherchiere die besten embedding-modelle für deutsche texte",
+                      "session_id": "s"},
+                     http_fn=_mk_http(), **self._kw(tmp_path))
+        assert out != ""
+        decision = self._last_decision(tmp_path)
+        assert decision["decision"] == "emit"
+        assert "task_verb" in decision["work_signals"]
+
     def test_budget_strategy_meta_question_without_work_signal_skips(self, tmp_path, monkeypatch):
         monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)
         prompt = ("Wie würdest du strategisch mein Token-Budget für Analyse und "
