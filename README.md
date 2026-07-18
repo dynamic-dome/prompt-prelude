@@ -78,6 +78,18 @@ fehl, gilt der Daemon für diesen Lauf als down und `/search` wird gar nicht
 erst versucht (Windows brennt für connection-refused auf localhost den vollen
 Timeout ab, gemessen ~0.5s pro totem Call).
 
+**Ghost-Mentor (v7, 2026-07-19):** zweite Vorab-Suche-Partition "Frühere Fälle"
+aus DENSELBEN /search-Overfetch-Ergebnissen (kein zusätzlicher Daemon-Call,
+kein Budget-Impact). Injiziert werden ähnlich gelöste Fälle aus der
+Präfix-Allowlist `haupt-wiki/queries/` (Session-Notes), `summary-harvest/`
+(geerntete Summaries) und `agent-memory/` (Decisions/Learnings), max. 2
+(`MENTOR_LIMIT`). Weil wiki-Treffer auch auf Junk-Queries existieren (v5-Befund:
+RRF-Scores gaten nicht), gilt zusätzlich ein Token-Overlap-Gate: ein Hint muss
+min. 2 signifikante Query-Tokens (>=4 Zeichen) tragen — leer ist gewollt besser
+als falsch. SQLite-Fallback analog (`_query_mentor_sqlite`, nur record_ids).
+Die sichtbare Statuszeile trägt `· mentor=N` nur bei Treffern (Format sonst
+unverändert).
+
 **Budget-Guard:** alle Daemon-Calls eines Laufs teilen sich ~1.2s
 (`DAEMON_BUDGET_S`); ist das Budget verbraucht, werden weitere Daemon-Calls
 geskippt und die Fallbacks greifen. Jeder einzelne Call hat einen kleinen
@@ -112,10 +124,14 @@ können diese Bug-Klasse prinzipiell nicht sehen.
 ## Telemetrie
 `prompt_prelude.jsonl` (gitignored, bleibt lokal): pro Prompt ein Event mit
 skip-Grund ODER `fired`-Routing. Auditierbare Felder pro Event:
-- `v` (Schema-Version, aktuell 5 = Caps-Gating atlas/-only + Query-Cleanup;
+- `v` (Schema-Version, aktuell 7 = Ghost-Mentor-Partition, neue Felder
+  `mentor`/`mentor_count`/`mentor_source` + geänderte Injektions-Semantik;
+  v6 = Threshold-Kalibrierung T-8; v5 = Caps-Gating atlas/-only + Query-Cleanup;
   v4 = stdin-UTF-8-Fix): v1-v3-Events sind Mojibake-vergiftet (cp1252-stdin),
   v4 hat andere Caps-Semantik als v5 — Routing-/Compliance-Auswertungen und
   Threshold-Kalibrierung NUR innerhalb einer Version fahren, nie mischen,
+- bei `fired` (v7): `mentor` (injizierte Frühere-Fälle-Hints), `mentor_count`,
+  `mentor_source` (`daemon|sqlite|none`),
 - bei `fired`: `caps_raw_count` (Treffer VOR dem atlas/-Filter) neben
   `caps_count` — zeigt, wie viel das Gate wegschneidet,
 - `prompt_preview` (erste 80 Zeichen) auf allen Events,

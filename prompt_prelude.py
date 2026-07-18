@@ -210,7 +210,7 @@ def build_rag_routing(domain, phase):
     return lines
 
 
-def compose_context(domain, phase, routing_lines, capabilities=None, query=None):
+def compose_context(domain, phase, routing_lines, capabilities=None, query=None, mentors=None):
     """Baut den <prompt_prelude>-Block. Leer-String, wenn nichts Relevantes.
 
     Wording-Politik (H1, Iteration 1): keine Selbst-Entwertung ("kein Befehl",
@@ -220,7 +220,7 @@ def compose_context(domain, phase, routing_lines, capabilities=None, query=None)
 
     Die ECHO-Zeile (erzwungene erste Antwortzeile) war Rollout-Verifikation und
     ist nur noch mit Env PRELUDE_ECHO=1 aktiv (Default: aus)."""
-    if not routing_lines and not capabilities:
+    if not routing_lines and not capabilities and not mentors:
         return ""
     dom = domain or "-"
     parts = []
@@ -237,17 +237,26 @@ def compose_context(domain, phase, routing_lines, capabilities=None, query=None)
         parts.append("")
         parts.append("VORAB-SUCHE Capability-RAG (bereits ausgeführt — prüfe diese Treffer zuerst):")
         parts.extend(f"- [{c}]" for c in capabilities)
+    if mentors:
+        parts.append("")
+        parts.append("VORAB-SUCHE Frühere Fälle (bereits ausgeführt — ähnliche gelöste "
+                     "Aufgaben/Session-Notes, bei Bedarf nachlesen):")
+        parts.extend(f"- [{m}]" for m in mentors)
     body = "\n".join(parts)
     return f'<prompt_prelude phase="{phase}" domain="{dom}">\n{body}\n</prompt_prelude>'
 
 
-def build_system_message(domain, phase, caps, caps_source):
+def build_system_message(domain, phase, caps, caps_source, mentors=None):
     """Sichtbare Status-Zeile für den USER (natives systemMessage-Feld, in den
     Claude-Code-Docs 'shown to the user'). Der additionalContext geht nur in
     Claudes Kontext — DAS hier ist der einzige Kanal, den der Mensch am Schirm
-    sieht. Kompakt: was hat der Hook entschieden + wie viele Caps vorab gesucht."""
+    sieht. Kompakt: was hat der Hook entschieden + wie viele Caps vorab gesucht.
+    Das mentor-Segment (v7) erscheint nur bei Treffern — ohne Ghost-Mentor-Hits
+    bleibt das Zeilenformat exakt rückwärtskompatibel."""
     n = len(caps or [])
-    return f"prelude ▸ {domain or '-'} · {phase} · caps={n}({caps_source or 'none'})"
+    msg = f"prelude ▸ {domain or '-'} · {phase} · caps={n}({caps_source or 'none'})"
+    m = len(mentors or [])
+    return msg + (f" · mentor={m}" if m else "")
 
 
 def make_output(additional_context, system_message=None):
@@ -364,7 +373,11 @@ def cleanup_state(state_dir, now, max_age_days=7):
         pass
 
 
-# Schema-Version an jedem Event: v6 = Threshold-Kalibrierung T-8 (TH_ACCEPT
+# Schema-Version an jedem Event: v7 = Ghost-Mentor (zweite Vorab-Suche-
+# Partition "Frühere Fälle" aus haupt-wiki/queries/, summary-harvest/,
+# agent-memory/; neue fired-Felder mentor/mentor_count/mentor_source;
+# Injektions-Semantik geändert -> Compliance-/Routing-Auswertungen nie mit
+# v6 mischen). v6 = Threshold-Kalibrierung T-8 (TH_ACCEPT
 # 0.45->0.40, TH_CLEAR 0.50->0.45; Daemon-Routing-Population geändert). Achtung:
 # v5 ist intern INHOMOGEN — v5a bis 2026-07-07 22:35 (vor T-30), v5b danach
 # (Präzisions-Gate T-30 + Skip-Zeile T-31 liefen ohne Bump; fired-Population
@@ -375,7 +388,7 @@ def cleanup_state(state_dir, now, max_age_days=7):
 # (general-Fallback: breit feuern, sichtbare systemMessage-Zeile, Dedupe pro
 # Thema). v2 = Iteration 1 (imperatives Wording, machine_prompt-Skip). v1 =
 # ohne "v". Auswertungen NIE über Versionen mischen.
-TELEMETRY_SCHEMA_VERSION = 6
+TELEMETRY_SCHEMA_VERSION = 7
 
 
 def log_telemetry(record, log_path):
@@ -686,27 +699,117 @@ def format_cap_hint(result):
         return ""
 
 
-def lookup_capabilities(terms, atlas_root, budget, http_fn=None, limit=3, daemon_ok=True):
-    """Caps-Lookup-Kaskade: Daemon /search zuerst, bei Fehler/Budget-Skip
-    Fallback auf den direkten SQLite/FTS5-Pfad. -> (hints, caps_source,
-    caps_raw_count). daemon_ok=False (z.B. classify schlug schon fehl -> Daemon
-    gilt für diesen Lauf als down) skippt den /search-Versuch komplett.
+# v7 Ghost-Mentor: "frühere gelöste Fälle" als zweite Partition DERSELBEN
+# /search-Overfetch-Ergebnisse (kein zusätzlicher Daemon-Call, kein Budget-
+# Impact). Allowlist statt "alles Nicht-atlas": wiki-Treffer existieren auch
+# auf Junk-Queries (v5-Befund), darum zusätzlich ein Token-Overlap-Gate —
+# ein Mentor-Hint muss min. 2 signifikante Query-Tokens tragen. Leer ist
+# gewollt besser als falsch.
+MENTOR_PREFIXES = ("haupt-wiki/queries/", "summary-harvest/", "agent-memory/")
+MENTOR_LIMIT = 2
+MENTOR_MIN_OVERLAP = 2
+
+
+def _mentor_overlap_ok(text, terms):
+    """Relevanz-Gate: min. MENTOR_MIN_OVERLAP signifikante Query-Tokens (>=4
+    Zeichen) müssen im Kandidaten-Text vorkommen. RRF-Scores können das nicht
+    leisten (v5-Befund) — Lexik-Overlap ist das billigste ehrliche Gate."""
+    toks = {t.lower() for t in str(terms).split() if len(t) >= 4}
+    if len(toks) < MENTOR_MIN_OVERLAP:
+        return False
+    low = str(text).lower()
+    return sum(1 for t in toks if t in low) >= MENTOR_MIN_OVERLAP
+
+
+def filter_mentor_results(results, terms, limit=MENTOR_LIMIT):
+    """Mentor-Partition der Daemon-/search-Results: Präfix-Allowlist +
+    Overlap-Gate, formatiert wie Caps-Hints. Fail-soft: Müll -> []."""
+    try:
+        hints = []
+        for r in results or []:
+            rid = str((r or {}).get("record_id", "") or "")
+            if not rid.startswith(MENTOR_PREFIXES):
+                continue
+            blob = " ".join([rid,
+                             str((r or {}).get("heading", "") or ""),
+                             str((r or {}).get("snippet", "") or "")])
+            if not _mentor_overlap_ok(blob, terms):
+                continue
+            h = format_cap_hint(r)
+            if h:
+                hints.append(h)
+            if len(hints) >= limit:
+                break
+        return hints
+    except Exception:
+        return []
+
+
+def _query_mentor_sqlite(terms, db_path, limit=MENTOR_LIMIT):
+    """SQLite/FTS5-Fallback der Mentor-Partition (nur record_ids, kein
+    Heading). Overlap-Gate läuft über record_id + Chunk-Text."""
+    if not str(terms).strip() or not db_path:
+        return []
+    fts = build_fts_query(str(terms))
+    if not fts:
+        return []
+    try:
+        import sqlite3
+        conn = sqlite3.connect(db_path, timeout=0.5)
+        try:
+            like = " OR ".join("record_id LIKE ?" for _ in MENTOR_PREFIXES)
+            rows = conn.execute(
+                "SELECT record_id, text FROM chunks WHERE chunks MATCH ? AND (" + like + ") "
+                "ORDER BY rank LIMIT 12",
+                (fts, *[p + "%" for p in MENTOR_PREFIXES]),
+            ).fetchall()
+        finally:
+            conn.close()
+        hints = []
+        for rid, text in rows:
+            if _mentor_overlap_ok(f"{rid} {text}", terms):
+                hints.append(rid)
+            if len(hints) >= limit:
+                break
+        return hints
+    except Exception:
+        return []
+
+
+def lookup_sources(terms, atlas_root, budget, http_fn=None, limit=3, daemon_ok=True):
+    """Lookup-Kaskade für BEIDE Vorab-Suche-Partitionen: Daemon /search zuerst,
+    bei Fehler/Budget-Skip Fallback auf den direkten SQLite/FTS5-Pfad.
+    -> (caps, caps_source, caps_raw_count, mentors, mentor_source).
+    daemon_ok=False (z.B. classify schlug schon fehl -> Daemon gilt für diesen
+    Lauf als down) skippt den /search-Versuch komplett.
 
     Iteration 3/v5 (2026-07-07): /search-Scores sind RRF-Rank-Fusion
     (rrf_fuse, k_const=60) und clustern für gute wie Junk-Queries ähnlich bei
     ca. 0.014-0.023; Score-Thresholds taugen NICHT als Relevanz-Gate. Live-Probe
     mit k=10 zeigte: Capability-Treffer tragen record_id-Prefix "atlas/", Junk
     hatte 0 atlas/-Treffer. Darum ist der Prefix-Filter das Gate; leer nach dem
-    Filter ist absichtlich besser als ein falscher Caps-Hint."""
+    Filter ist absichtlich besser als ein falscher Caps-Hint. Die Mentor-
+    Partition (v7) nutzt dieselben Results mit eigener Allowlist + Overlap-Gate."""
     overfetch = max(12, int(limit))
     results = budget.call(search_via_daemon, terms, overfetch, http_fn=http_fn) if daemon_ok else None
     if results is not None:
         raw_count = len(results)
         filtered = [r for r in results if str((r or {}).get("record_id", "")).startswith("atlas/")]
         hints = [h for h in (format_cap_hint(r) for r in filtered[:limit]) if h]
-        return hints, ("daemon" if hints else "none"), raw_count
-    caps, raw_count = _query_atlas_filtered(terms, find_atlas_db(atlas_root), limit=limit, raw_limit=overfetch)
-    return caps, ("sqlite" if caps else "none"), raw_count
+        mentors = filter_mentor_results(results, terms)
+        return (hints, ("daemon" if hints else "none"), raw_count,
+                mentors, ("daemon" if mentors else "none"))
+    db = find_atlas_db(atlas_root)
+    caps, raw_count = _query_atlas_filtered(terms, db, limit=limit, raw_limit=overfetch)
+    mentors = _query_mentor_sqlite(terms, db)
+    return (caps, ("sqlite" if caps else "none"), raw_count,
+            mentors, ("sqlite" if mentors else "none"))
+
+
+def lookup_capabilities(terms, atlas_root, budget, http_fn=None, limit=3, daemon_ok=True):
+    """Rückwärts-kompatibler Caps-Blick auf lookup_sources (3-Tupel-Kontrakt)."""
+    return lookup_sources(terms, atlas_root, budget, http_fn=http_fn,
+                          limit=limit, daemon_ok=daemon_ok)[:3]
 
 
 def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=None, decision_log_path=None):
@@ -813,15 +916,16 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
             return make_skip_status("deduped", domain, phase)
 
     terms = extract_query(prompt)
-    caps, caps_source, caps_raw_count = lookup_capabilities(terms, atlas_root,
-                                                            budget, http_fn=http_fn,
-                                                            daemon_ok=daemon_scores is not None)
+    caps, caps_source, caps_raw_count, mentors, mentor_source = lookup_sources(
+        terms, atlas_root, budget, http_fn=http_fn,
+        daemon_ok=daemon_scores is not None)
     # Unter 2 Content-Tokens ist die Vertiefungszeile Rauschen
     # (Live-Smoke 2026-07-07: memory_search_tool("weiter") auf Junk-Prompt).
     ctx = compose_context(domain, phase, routing, caps,
-                          query=terms if len(terms.split()) >= 2 else None)
+                          query=terms if len(terms.split()) >= 2 else None,
+                          mentors=mentors)
     # systemMessage nur beim tatsächlichen Feuern (Q1: sichtbare Zeile nur wenn feuert).
-    sys_msg = build_system_message(domain, phase, caps, caps_source) if ctx else None
+    sys_msg = build_system_message(domain, phase, caps, caps_source, mentors) if ctx else None
     out = make_output(ctx, system_message=sys_msg)
 
     if out:
@@ -835,6 +939,8 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
                        "key": key, "caps": caps, "caps_count": len(caps),
                        "caps_raw_count": caps_raw_count,
                        "caps_source": caps_source, "query": terms,
+                       "mentor": mentors, "mentor_count": len(mentors),
+                       "mentor_source": mentor_source,
                        "rearmed": rearmed, "prompt_preview": preview,
                        "matched_keywords": dom_hits + phase_hits,
                        "session": session_id, **ab}, log_path)

@@ -273,7 +273,7 @@ class TestTelemetry:
         ev = _json.loads(open(log, encoding="utf-8").read().strip())
         # v4 = Iteration 3 (stdin-UTF-8-Fix): Live-Daten davor sind Mojibake-
         # vergiftet, Auswertungen NIE über die Versionsgrenze mischen.
-        assert ev["v"] == pp.TELEMETRY_SCHEMA_VERSION == 6
+        assert ev["v"] == pp.TELEMETRY_SCHEMA_VERSION == 7
 
 
 class TestExtractQuery:
@@ -1197,3 +1197,187 @@ class TestStdinEncodingE2E:
         ev = _json.loads(log.read_text(encoding="utf-8").strip().splitlines()[-1])
         assert "möchte" in ev["prompt_preview"]
         assert "Ã" not in ev["prompt_preview"]
+
+
+# ---------------------------------------------------------------------------
+# v7 Ghost-Mentor: zweite Partition derselben /search-Overfetch-Ergebnisse.
+# Frühere gelöste Fälle (haupt-wiki/queries/, summary-harvest/, agent-memory/)
+# werden als eigener VORAB-SUCHE-Block injiziert. KEIN zusätzlicher Daemon-
+# Call; Relevanz-Gate ist Präfix-Allowlist + Token-Overlap (v5-Lektion:
+# RRF-Scores taugen nicht als Gate, und wiki-Treffer gibt es auch auf Junk).
+# ---------------------------------------------------------------------------
+MENTOR_TERMS = "responsive component layout header"
+MENTOR_RESULTS = [
+    {"record_id": "haupt-wiki/queries/2026-07-01-session-header",
+     "heading": "Header-Layout Session", "snippet": "responsive component layout header gelöst"},
+    {"record_id": "summary-harvest/2026-06-29/abc",
+     "heading": "", "snippet": "component layout summary harvest"},
+    {"record_id": "agent-memory/agent-memory-atlas/decisions/D7",
+     "heading": "Decision D7", "snippet": "layout component entschieden"},
+    {"record_id": "haupt-wiki/concepts/css-grid",
+     "heading": "CSS Grid", "snippet": "responsive component layout"},          # Präfix nicht erlaubt
+    {"record_id": "haupt-wiki/queries/2026-06-01-session-db",
+     "heading": "DB-Session", "snippet": "datenbank migration alembic"},        # kein Token-Overlap
+    {"record_id": "atlas/skill:frontend-design",
+     "heading": "Frontend", "snippet": "responsive component layout"},          # Caps, kein Mentor
+]
+
+
+def _mentor_db(tmp_path):
+    """Eigener FTS5-Mini-Index für die SQLite-Fallback-Tests (unabhängig von
+    fake_atlas_db, damit deren Caps-Semantik unberührt bleibt)."""
+    import sqlite3
+    db = tmp_path / "mentor.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE VIRTUAL TABLE chunks USING fts5(text, record_id, chunk_id, source_path)")
+    rows = [
+        ("responsive component layout header session geloest",
+         "haupt-wiki/queries/2026-07-01-session-header-layout", "0", "a.md"),
+        ("frontend design ui component layout skill", "atlas/skill:frontend-design", "0", "y.md"),
+        ("voellig anderes thema datenbank migration alembic",
+         "haupt-wiki/queries/2026-06-01-session-db", "0", "b.md"),
+        ("responsive component layout konzept notiz", "haupt-wiki/concepts/css-layout", "0", "c.md"),
+    ]
+    conn.executemany("INSERT INTO chunks VALUES (?,?,?,?)", rows)
+    conn.commit()
+    conn.close()
+    return str(db)
+
+
+class TestV7GhostMentorFilter:
+    def test_prefix_allowlist_only(self):
+        hints = pp.filter_mentor_results(MENTOR_RESULTS, MENTOR_TERMS, limit=10)
+        joined = " ".join(hints)
+        assert "haupt-wiki/queries/2026-07-01-session-header" in joined
+        assert "summary-harvest/" in joined
+        assert "haupt-wiki/concepts/" not in joined
+        assert "atlas/skill:" not in joined
+
+    def test_token_overlap_gate_drops_unrelated(self):
+        hints = pp.filter_mentor_results(MENTOR_RESULTS, MENTOR_TERMS, limit=10)
+        assert not any("session-db" in h for h in hints)
+
+    def test_cap_at_mentor_limit(self):
+        hints = pp.filter_mentor_results(MENTOR_RESULTS, MENTOR_TERMS)
+        assert len(hints) == pp.MENTOR_LIMIT == 2
+
+    def test_hints_carry_heading(self):
+        hints = pp.filter_mentor_results(MENTOR_RESULTS, MENTOR_TERMS, limit=1)
+        assert hints == ["haupt-wiki/queries/2026-07-01-session-header — Header-Layout Session"]
+
+    def test_thin_terms_yield_nothing(self):
+        # <2 signifikante Tokens: Overlap-Gate kann nicht greifen -> leer
+        # (leer ist gewollt besser als falsch, analog Caps-Gate v5).
+        assert pp.filter_mentor_results(MENTOR_RESULTS, "weiter") == []
+        assert pp.filter_mentor_results(MENTOR_RESULTS, "") == []
+
+    def test_failsoft_broken_input(self):
+        assert pp.filter_mentor_results(None, MENTOR_TERMS) == []
+        assert pp.filter_mentor_results([None, {}, {"record_id": 42}], MENTOR_TERMS) == []
+
+
+class TestV7GhostMentorSqlite:
+    def test_fallback_finds_relevant_mentor(self, tmp_path):
+        db = _mentor_db(tmp_path)
+        hits = pp._query_mentor_sqlite(MENTOR_TERMS, db)
+        assert hits == ["haupt-wiki/queries/2026-07-01-session-header-layout"]
+
+    def test_fallback_respects_allowlist_and_overlap(self, tmp_path):
+        db = _mentor_db(tmp_path)
+        hits = pp._query_mentor_sqlite(MENTOR_TERMS, db, limit=10)
+        assert not any("concepts" in h for h in hits)
+        assert not any("session-db" in h for h in hits)
+        assert not any(h.startswith("atlas/") for h in hits)
+
+    def test_failsoft_bad_db(self):
+        assert pp._query_mentor_sqlite(MENTOR_TERMS, "Z:/nope/bm25.db") == []
+        assert pp._query_mentor_sqlite("", "irrelevant") == []
+
+
+class TestV7GhostMentorCompose:
+    def test_mentor_block_rendered(self):
+        out = pp.compose_context("ui-frontend", "quiet", ["tu X"], ["atlas/skill:x"],
+                                 query="a b", mentors=["haupt-wiki/queries/s — Titel"])
+        assert "Frühere Fälle" in out
+        assert "bereits ausgeführt" in out
+        assert "- [haupt-wiki/queries/s — Titel]" in out
+
+    def test_mentor_block_absent_without_mentors(self):
+        out = pp.compose_context("ui-frontend", "quiet", ["tu X"], ["atlas/skill:x"])
+        assert "Frühere Fälle" not in out
+
+    def test_mentors_only_still_renders(self):
+        out = pp.compose_context("general", "quiet", [], None,
+                                 mentors=["haupt-wiki/queries/s — Titel"])
+        assert "Frühere Fälle" in out
+        assert "Capability-RAG (bereits ausgeführt" not in out
+
+    def test_system_message_mentor_suffix(self):
+        msg = pp.build_system_message("debug", "quiet", ["a"], "daemon",
+                                      mentors=["m1", "m2"])
+        assert msg == "prelude ▸ debug · quiet · caps=1(daemon) · mentor=2"
+
+    def test_system_message_unchanged_without_mentors(self):
+        # Rückwärts-Kontrakt: ohne Mentor-Treffer bleibt das alte Format exakt.
+        assert pp.build_system_message("debug", "quiet", ["a"], "daemon", mentors=[]) == \
+            "prelude ▸ debug · quiet · caps=1(daemon)"
+
+
+class TestV7GhostMentorRun:
+    def _kw(self, tmp_path):
+        return dict(atlas_root="x", state_dir=str(tmp_path / "st"),
+                    log_path=str(tmp_path / "l"), now=1.0)
+
+    def _last_event(self, tmp_path):
+        return _json.loads((tmp_path / "l").read_text(encoding="utf-8").strip().splitlines()[-1])
+
+    def test_daemon_results_partition_into_caps_and_mentors(self, tmp_path):
+        calls = []
+        results = [
+            {"record_id": "atlas/skill:first", "heading": "First"},
+            {"record_id": "haupt-wiki/queries/2026-07-01-session-seite-moderner",
+             "heading": "Session: seite moderner erstellen"},
+        ]
+        fn = _mk_http(classify=_scores(("ui-frontend", 0.62)),
+                      search={"results": results}, calls=calls)
+        out = pp.run({"prompt": NO_KEYWORD_PROMPT, "session_id": "s"},
+                     http_fn=fn, **self._kw(tmp_path))
+        ctx = _json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        ev = self._last_event(tmp_path)
+        # beide Blöcke im Kontext, EIN einziger /search-Call (kein Zusatz-Budget)
+        assert "Capability-RAG (bereits ausgeführt" in ctx
+        assert "Frühere Fälle" in ctx
+        assert sum(1 for u in calls if u.endswith("/search")) == 1
+        assert ev["caps"] == ["atlas/skill:first — First"]
+        assert ev["mentor"] == ["haupt-wiki/queries/2026-07-01-session-seite-moderner"
+                                " — Session: seite moderner erstellen"]
+        assert ev["mentor_count"] == 1
+        assert ev["mentor_source"] == "daemon"
+
+    def test_no_overlap_no_mentor_block(self, tmp_path):
+        results = [{"record_id": "haupt-wiki/queries/2026-03-03-session-datenbank",
+                    "heading": "Alembic Migration", "snippet": "postgres upgrade"}]
+        fn = _mk_http(classify=_scores(("ui-frontend", 0.62)), search={"results": results})
+        out = pp.run({"prompt": NO_KEYWORD_PROMPT, "session_id": "s"},
+                     http_fn=fn, **self._kw(tmp_path))
+        ctx = _json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        ev = self._last_event(tmp_path)
+        assert "Frühere Fälle" not in ctx
+        assert ev["mentor"] == [] and ev["mentor_count"] == 0
+        assert ev["mentor_source"] == "none"
+
+    def test_sqlite_fallback_mentor_source(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: _mentor_db(tmp_path))
+        fn = _mk_http(classify=_scores(("ui-frontend", 0.62)), search=ConnectionError("down"))
+        out = pp.run({"prompt": KEYWORD_UI_PROMPT, "session_id": "s"},
+                     http_fn=fn, **self._kw(tmp_path))
+        ev = self._last_event(tmp_path)
+        assert ev["mentor_source"] == "sqlite"
+        assert ev["mentor"] == ["haupt-wiki/queries/2026-07-01-session-header-layout"]
+        assert "Frühere Fälle" in _json.loads(out)["hookSpecificOutput"]["additionalContext"]
+
+    def test_fire_system_message_shows_mentor_count(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: _mentor_db(tmp_path))
+        out = pp.run({"prompt": KEYWORD_UI_PROMPT, "session_id": "s"},
+                     http_fn=_mk_http(), **self._kw(tmp_path))
+        assert "· mentor=1" in _json.loads(out)["systemMessage"]
