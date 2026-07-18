@@ -1275,6 +1275,11 @@ class TestV7GhostMentorFilter:
         assert pp.filter_mentor_results(None, MENTOR_TERMS) == []
         assert pp.filter_mentor_results([None, {}, {"record_id": 42}], MENTOR_TERMS) == []
 
+    def test_limit_zero_returns_empty(self):
+        # Codex-Verifier-Finding 2026-07-19: append lief VOR dem Limit-Check ->
+        # limit=0 lieferte 1 Treffer. Kontrakt: limit<=0 == nichts injizieren.
+        assert pp.filter_mentor_results(MENTOR_RESULTS, MENTOR_TERMS, limit=0) == []
+
 
 class TestV7GhostMentorSqlite:
     def test_fallback_finds_relevant_mentor(self, tmp_path):
@@ -1292,6 +1297,10 @@ class TestV7GhostMentorSqlite:
     def test_failsoft_bad_db(self):
         assert pp._query_mentor_sqlite(MENTOR_TERMS, "Z:/nope/bm25.db") == []
         assert pp._query_mentor_sqlite("", "irrelevant") == []
+
+    def test_limit_zero_returns_empty(self, tmp_path):
+        # Analog filter_mentor_results (Codex-Verifier-Finding 2026-07-19).
+        assert pp._query_mentor_sqlite(MENTOR_TERMS, _mentor_db(tmp_path), limit=0) == []
 
 
 class TestV7GhostMentorCompose:

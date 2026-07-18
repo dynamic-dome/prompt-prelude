@@ -725,6 +725,8 @@ def filter_mentor_results(results, terms, limit=MENTOR_LIMIT):
     """Mentor-Partition der Daemon-/search-Results: Präfix-Allowlist +
     Overlap-Gate, formatiert wie Caps-Hints. Fail-soft: Müll -> []."""
     try:
+        if int(limit) <= 0:
+            return []
         hints = []
         for r in results or []:
             rid = str((r or {}).get("record_id", "") or "")
@@ -748,7 +750,7 @@ def filter_mentor_results(results, terms, limit=MENTOR_LIMIT):
 def _query_mentor_sqlite(terms, db_path, limit=MENTOR_LIMIT):
     """SQLite/FTS5-Fallback der Mentor-Partition (nur record_ids, kein
     Heading). Overlap-Gate läuft über record_id + Chunk-Text."""
-    if not str(terms).strip() or not db_path:
+    if not str(terms).strip() or not db_path or limit <= 0:
         return []
     fts = build_fts_query(str(terms))
     if not fts:
