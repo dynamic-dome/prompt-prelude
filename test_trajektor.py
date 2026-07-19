@@ -168,3 +168,61 @@ class TestDecide:
         w["call_count"] += 20
         s3, w = tj.decide(w, 0.7)   # über fire, aber nicht armed -> not_armed
         assert (s1, s2, s3) == ("fire", "below", "not_armed")
+
+
+class TestOutputAndRun:
+    def test_make_ptu_output_schema(self):
+        out = json.loads(tj.make_ptu_output("CTX", "MSG"))
+        assert out["hookSpecificOutput"]["hookEventName"] == "PostToolUse"
+        assert out["hookSpecificOutput"]["additionalContext"] == "CTX"
+        assert out["systemMessage"] == "MSG"
+
+    def test_make_ptu_output_empty(self):
+        assert tj.make_ptu_output(None, None) == ""
+
+    def test_build_reframing_contains_anchor_and_verdict(self):
+        anchor = _mk_anchor({"login", "backend"}, ["c:/repo/auth"])
+        anchor["prompt_preview"] = "Implementiere das Login-Modul"
+        s = {"total": 0.8, "token_shift": 0.9, "path_divergence": 0.7,
+             "phase_flip": 0.0, "window_phase": "build"}
+        text = tj.build_reframing(anchor, s)
+        assert "Implementiere das Login-Modul" in text
+        assert "0.8" in text
+
+    def _payload(self, sid, tool="Edit", path="c:/other/x.py"):
+        return {"session_id": sid, "tool_name": tool,
+                "tool_input": {"file_path": path}}
+
+    def test_run_traj_no_anchor_silent(self, tmp_path):
+        out = tj.run_traj(self._payload("s-noanchor"), state_dir=str(tmp_path),
+                          log_path=str(tmp_path / "t.jsonl"), now=1.0)
+        assert out == ""
+        rec = json.loads((tmp_path / "t.jsonl").read_text(encoding="utf-8").splitlines()[0])
+        assert rec["status"] == "no_anchor" and rec["tv"] == "t1"
+
+    def test_run_traj_fires_on_hard_drift(self, tmp_path):
+        import prompt_prelude as pp
+        anchor = pp.build_anchor("Implementiere das Login-Modul in c:/repo/auth/mod.py",
+                                 "code-impl", "quiet", now=1.0)
+        pp.save_anchor("s-drift", str(tmp_path), anchor)
+        out = ""
+        for i in range(6):  # 6 fremde Edits -> Score über TRAJ_FIRE
+            out = tj.run_traj(self._payload("s-drift", path=f"c:/webshop/theme/part{i}.css"),
+                              state_dir=str(tmp_path),
+                              log_path=str(tmp_path / "t.jsonl"), now=float(i))
+            if out:
+                break
+        parsed = json.loads(out)
+        assert "Login-Modul" in parsed["hookSpecificOutput"]["additionalContext"]
+        assert parsed["systemMessage"].startswith("trajektor ▸ drift")
+
+    def test_run_traj_on_track_never_fires(self, tmp_path):
+        import prompt_prelude as pp
+        anchor = pp.build_anchor("Baue trajektor.py in c:/repo/prompt-prelude weiter",
+                                 "code-impl", "quiet", now=1.0)
+        pp.save_anchor("s-ok", str(tmp_path), anchor)
+        for i in range(20):
+            out = tj.run_traj(self._payload("s-ok", path="c:/repo/prompt-prelude/trajektor.py"),
+                              state_dir=str(tmp_path),
+                              log_path=str(tmp_path / "t.jsonl"), now=float(i))
+            assert out == ""   # eigener Test: on-track feuert NIE

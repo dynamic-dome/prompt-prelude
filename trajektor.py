@@ -187,6 +187,81 @@ def decide(window, total):
     return "fire", w
 
 
+TRAJ_SCHEMA = "t1"  # Ära t1 — nie mit prompt_prelude.jsonl-Ären mischen (D7)
+
+
+def log_traj(record, log_path):
+    try:
+        record.setdefault("tv", TRAJ_SCHEMA)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def build_reframing(anchor, score):
+    verdict = "Drift" if score["total"] >= TRAJ_FIRE else "Nebenpfad"
+    lines = [
+        f"TRAJEKTOR (Drift-Check, deterministisch): Ursprungs-Auftrag war: "
+        f"„{anchor.get('prompt_preview', '?')}“",
+        f"Der aktuelle Tool-Pfad (Phase {score['window_phase']}) bewertet sich "
+        f"dagegen als {verdict} (Score {score['total']}, "
+        f"token_shift {score['token_shift']}, path_divergence {score['path_divergence']}).",
+        "Kurz prüfen: dient die aktuelle Arbeit noch diesem Auftrag, oder ist es "
+        "ein unbeauftragter Nebenpfad? Wenn Nebenpfad: benennen oder zurückkehren.",
+    ]
+    return "\n".join(lines)
+
+
+def make_ptu_output(additional_context, system_message):
+    if not additional_context and not system_message:
+        return ""
+    out = {}
+    if additional_context:
+        out["hookSpecificOutput"] = {
+            "hookEventName": "PostToolUse",
+            "additionalContext": additional_context,
+        }
+    if system_message:
+        out["systemMessage"] = system_message
+    return json.dumps(out, ensure_ascii=False)
+
+
+def _default_traj_log():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "trajektor.jsonl")
+
+
+def run_traj(payload, *, state_dir, log_path, now):
+    if not isinstance(payload, dict):
+        return ""
+    session_id = payload.get("session_id", "default") or "default"
+    tool_name = str(payload.get("tool_name", ""))
+    window = load_window(session_id, state_dir)
+    paths = extract_tool_paths(tool_name, payload.get("tool_input"))
+    window = update_window(window, tool_name, paths)
+
+    anchor = load_anchor(session_id, state_dir)
+    if not anchor:
+        save_window(session_id, state_dir, window)
+        log_traj({"t": now, "session": session_id, "status": "no_anchor",
+                  "tool": tool_name}, log_path)
+        return ""
+
+    score = drift_score(anchor, window)
+    status, window = decide(window, score["total"])
+    save_window(session_id, state_dir, window)
+    rec = {"t": now, "session": session_id, "status": status, "tool": tool_name,
+           "score": score, "call_count": window["call_count"],
+           "fires": window["fires"]}
+    log_traj(rec, log_path)
+    if status != "fire":
+        return ""
+    ctx = build_reframing(anchor, score)
+    msg = (f"trajektor ▸ drift · score={score['total']} · "
+           f"fire {window['fires']}/{SESSION_FIRE_CAP}")
+    return make_ptu_output(ctx, msg)
+
+
 def main():
     try:
         raw = _read_stdin_utf8()
@@ -194,17 +269,16 @@ def main():
             payload = json.loads(raw or "{}")
         except Exception:
             return 0
-        if not isinstance(payload, dict):
-            return 0
-        session_id = payload.get("session_id", "default") or "default"
         state_dir = _default_state_dir()
         cleanup_state(state_dir, time.time())
-        window = load_window(session_id, state_dir)
-        paths = extract_tool_paths(payload.get("tool_name", ""),
-                                   payload.get("tool_input"))
-        window = update_window(window, str(payload.get("tool_name", "")), paths)
-        save_window(session_id, state_dir, window)
-        # Score/Fire folgt in Task 5 — bis dahin stiller Beobachter.
+        try:
+            out = run_traj(payload, state_dir=state_dir,
+                           log_path=_default_traj_log(), now=time.time())
+            if out:
+                print(out)
+        except Exception as e:
+            log_traj({"t": time.time(), "status": "crash",
+                      "error": str(e)[:200]}, _default_traj_log())
     except Exception:
         pass
     return 0
