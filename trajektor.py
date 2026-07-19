@@ -29,7 +29,8 @@ def window_path(session_id, state_dir):
 
 
 def _default_window():
-    return {"calls": [], "call_count": 0, "armed": True, "cooldown_until": 0, "fires": 0}
+    return {"calls": [], "call_count": 0, "armed": True, "cooldown_until": 0,
+             "fires": 0, "anchor_t": 0}
 
 
 def load_window(session_id, state_dir):
@@ -57,8 +58,12 @@ def save_window(session_id, state_dir, window):
         pass
 
 
-# Pfadartig innerhalb von Bash-Kommandos: mindestens ein Separator
-_BASH_PATH_RE = re.compile(r"[\w.~-]+(?:[\\/][\w.~-]+)+")
+# Pfadartig innerhalb von Bash-Kommandos: mindestens ein Separator.
+# Optionaler Windows-Laufwerksbuchstabe vorweg (z.B. "C:\repo\tests\test_x.py")
+# -- das erste Segment ist bewusst [\w.~-]* (nicht +), sonst frisst das
+# Backtracking den Drive-Prefix wieder weg, weil direkt nach "C:" ein
+# Separator folgt und kein Wortzeichen (Codex-Verifier-Finding).
+_BASH_PATH_RE = re.compile(r"(?:[A-Za-z]:)?[\w.~-]*(?:[\\/][\w.~-]+)+")
 
 
 def _norm(p):
@@ -86,8 +91,8 @@ def extract_tool_paths(tool_name, tool_input):
     return out
 
 
-def update_window(window, tool_name, paths):
-    calls = window["calls"] + [{"tool": tool_name, "paths": paths}]
+def update_window(window, tool_name, paths, is_test=False):
+    calls = window["calls"] + [{"tool": tool_name, "paths": paths, "test": is_test}]
     return {**window, "calls": calls[-WINDOW_K:],
             "call_count": window["call_count"] + 1}
 
@@ -97,6 +102,18 @@ W_TOKEN, W_PATH, W_PHASE = 0.5, 0.3, 0.2
 _EXPLORE_TOOLS = {"Read", "Grep", "Glob"}
 _BUILD_TOOLS = {"Edit", "Write", "NotebookEdit"}
 _TEST_MARKERS = ("pytest", "test", "npm run", "cargo test", "go test")
+
+
+def is_test_command(tool_name, tool_input):
+    """True, wenn der Call ein Test-Runner ist -- unabhaengig davon, ob er
+    Pfad-Argumente hat ("pytest -q" liefert extract_tool_paths()==[])."""
+    if tool_name != "Bash" or not isinstance(tool_input, dict):
+        return False
+    cmd = tool_input.get("command")
+    if not isinstance(cmd, str):
+        return False
+    low = cmd.lower()
+    return any(m in low for m in _TEST_MARKERS)
 
 
 def window_tokens(window):
@@ -114,8 +131,7 @@ def phase_from_tools(window):
     n = len(tools)
     explore = sum(1 for t in tools if t in _EXPLORE_TOOLS)
     build = sum(1 for t in tools if t in _BUILD_TOOLS)
-    verify = sum(1 for c in window["calls"] if c["tool"] == "Bash"
-                 and any(m in " ".join(c["paths"]) for m in _TEST_MARKERS))
+    verify = sum(1 for c in window["calls"] if c.get("test"))
     if verify >= max(1, n // 2):
         return "verify"
     if build > n * 0.6:
@@ -143,7 +159,10 @@ def drift_score(anchor, window):
     a_dirs = [d for d in (anchor.get("dirs") or [])]
     all_paths = [p for c in window["calls"] for p in c["paths"]]
     if a_dirs and all_paths:
-        outside = sum(1 for p in all_paths if not any(d in p for d in a_dirs))
+        # Segment-Grenze statt Substring: "auth-old" ist kein Unterverzeichnis
+        # von "auth" (Codex-Verifier-Finding).
+        outside = sum(1 for p in all_paths
+                      if not any(p == d or p.startswith(d + "/") for d in a_dirs))
         path_divergence = outside / len(all_paths)
     else:
         path_divergence = 0.0  # ohne Anchor-Pfade kein Urteil (neutral, kein Fehlalarm)
@@ -201,6 +220,11 @@ def log_traj(record, log_path):
 
 def build_reframing(anchor, score):
     verdict = "Drift" if score["total"] >= TRAJ_FIRE else "Nebenpfad"
+    tokens = list(anchor.get("tokens") or [])[:3]
+    dirs = list(anchor.get("dirs") or [])[:2]
+    kernpunkte = "Kernpunkte des Auftrags: " + (", ".join(tokens) if tokens else "?")
+    if dirs:
+        kernpunkte += " · Pfade: " + ", ".join(dirs)
     lines = [
         f"TRAJEKTOR (Drift-Check, deterministisch): Ursprungs-Auftrag war: "
         f"„{anchor.get('prompt_preview', '?')}“",
@@ -209,6 +233,7 @@ def build_reframing(anchor, score):
         f"token_shift {score['token_shift']}, path_divergence {score['path_divergence']}).",
         "Kurz prüfen: dient die aktuelle Arbeit noch diesem Auftrag, oder ist es "
         "ein unbeauftragter Nebenpfad? Wenn Nebenpfad: benennen oder zurückkehren.",
+        kernpunkte,
     ]
     return "\n".join(lines)
 
@@ -237,8 +262,10 @@ def run_traj(payload, *, state_dir, log_path, now):
     session_id = payload.get("session_id", "default") or "default"
     tool_name = str(payload.get("tool_name", ""))
     window = load_window(session_id, state_dir)
-    paths = extract_tool_paths(tool_name, payload.get("tool_input"))
-    window = update_window(window, tool_name, paths)
+    tool_input = payload.get("tool_input")
+    paths = extract_tool_paths(tool_name, tool_input)
+    is_test = is_test_command(tool_name, tool_input)
+    window = update_window(window, tool_name, paths, is_test=is_test)
 
     anchor = load_anchor(session_id, state_dir)
     if not anchor:
@@ -246,6 +273,14 @@ def run_traj(payload, *, state_dir, log_path, now):
         log_traj({"t": now, "session": session_id, "status": "no_anchor",
                   "tool": tool_name}, log_path)
         return ""
+
+    if window.get("anchor_t") != anchor.get("t"):
+        # Re-Anchor (neuer User-Prompt): das Fenster gehoert dem alten Thema
+        # -> Aera wechseln, sonst feuert der erste Call nach legitimem
+        # Themenwechsel faelschlich (Codex-Verifier-Finding). Session-Cap/
+        # Cooldown/fires sind Session-Semantik und bleiben unberuehrt.
+        window = {**window, "calls": window["calls"][-1:], "armed": True,
+                  "anchor_t": anchor.get("t")}
 
     score = drift_score(anchor, window)
     status, window = decide(window, score["total"])

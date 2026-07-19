@@ -12,7 +12,7 @@ class TestWindowState:
     def test_load_window_default(self, tmp_path):
         w = tj.load_window("s1", str(tmp_path))
         assert w == {"calls": [], "call_count": 0, "armed": True,
-                     "cooldown_until": 0, "fires": 0}
+                     "cooldown_until": 0, "fires": 0, "anchor_t": 0}
 
     def test_roundtrip(self, tmp_path):
         w = tj.load_window("s1", str(tmp_path))
@@ -53,12 +53,23 @@ class TestExtractToolPaths:
         assert tj.extract_tool_paths("WebSearch", {}) == []
         assert tj.extract_tool_paths("Bash", None) == []
 
+    def test_bash_command_keeps_windows_drive_letter(self):
+        # Fix 3a (Codex-Verifier, Medium): "C:\repo\tests\test_x.py" verlor
+        # bisher den Laufwerksbuchstaben -> "repo/tests/test_x.py".
+        paths = tj.extract_tool_paths("Bash", {"command": r"pytest C:\repo\tests\test_x.py"})
+        assert "c:/repo/tests/test_x.py" in paths
+
 
 def _mk_window(specs):
-    """specs: Liste (tool, [paths]) -> Window-Dict."""
+    """specs: Liste (tool, [paths]) oder (tool, [paths], is_test) -> Window-Dict."""
     w = tj._default_window()
-    for tool, paths in specs:
-        w = tj.update_window(w, tool, paths)
+    for spec in specs:
+        if len(spec) == 3:
+            tool, paths, is_test = spec
+        else:
+            tool, paths = spec
+            is_test = False
+        w = tj.update_window(w, tool, paths, is_test=is_test)
     return w
 
 
@@ -102,6 +113,17 @@ class TestDriftScore:
         w = _mk_window([("Edit", ["c:/anywhere/x.py"])])
         assert tj.drift_score(anchor, w)["path_divergence"] == 0.0
 
+    def test_path_divergence_uses_segment_boundary_not_substring(self):
+        # Fix 2 (Codex-Verifier, Medium): "auth-old" ist KEIN Unterverzeichnis
+        # von "auth" -- ein reiner Substring-Check ("d in p") wuerde das
+        # faelschlich als on-track werten.
+        anchor = _mk_anchor({"auth"}, ["c:/repo/auth"])
+        w = _mk_window([("Edit", ["c:/repo/auth-old/main.py"])])
+        assert tj.drift_score(anchor, w)["path_divergence"] == 1.0
+
+        w_ok = _mk_window([("Edit", ["c:/repo/auth/sub/main.py"])])
+        assert tj.drift_score(anchor, w_ok)["path_divergence"] == 0.0
+
     def test_empty_window_tokens_max_shift(self):
         # Fenster mit Calls, aber ohne signifikante Pfad-Tokens (z.B. WebSearch,
         # Bash ohne Pfad-Argument): token_shift schlägt voll aus (1.0), aber
@@ -122,11 +144,42 @@ class TestPhaseFromTools:
         assert tj.phase_from_tools(_mk_window([("Edit", []), ("Write", []), ("Edit", [])])) == "build"
 
     def test_verify(self):
-        w = _mk_window([("Bash", ["tests/test_a.py"]), ("Bash", ["pytest"])])
+        # Fix 3b (Codex-Verifier, Medium): verify wird ueber das explizite
+        # "test"-Flag pro Call erkannt, nicht mehr per Marker-Suche in paths
+        # (die bei pfadlosen Testlaeufen wie "pytest -q" ins Leere lief).
+        w = _mk_window([("Bash", ["tests/test_a.py"], True), ("Bash", [], True)])
         assert tj.phase_from_tools(w) == "verify"
 
     def test_mixed(self):
         assert tj.phase_from_tools(_mk_window([("Read", []), ("Edit", [])])) == "mixed"
+
+    def test_verify_via_is_test_command_no_path_args(self):
+        # Regressionstest Fix 3b: "python -m pytest -q" ohne Pfadargument
+        # lieferte frueher paths=[] -> phase_from_tools sah nie "verify".
+        w = tj._default_window()
+        for _ in range(2):
+            cmd = "python -m pytest -q"
+            tool_input = {"command": cmd}
+            paths = tj.extract_tool_paths("Bash", tool_input)
+            is_test = tj.is_test_command("Bash", tool_input)
+            w = tj.update_window(w, "Bash", paths, is_test=is_test)
+        assert w["calls"][0]["paths"] == []
+        assert tj.phase_from_tools(w) == "verify"
+
+
+class TestIsTestCommand:
+    def test_pytest_marker(self):
+        assert tj.is_test_command("Bash", {"command": "python -m pytest -q"}) is True
+
+    def test_non_bash_tool_false(self):
+        assert tj.is_test_command("Edit", {"command": "pytest -q"}) is False
+
+    def test_no_marker_false(self):
+        assert tj.is_test_command("Bash", {"command": "ls -la"}) is False
+
+    def test_missing_command_false(self):
+        assert tj.is_test_command("Bash", {}) is False
+        assert tj.is_test_command("Bash", None) is False
 
 
 class TestDecide:
@@ -202,6 +255,17 @@ class TestOutputAndRun:
         assert "Implementiere das Login-Modul" in text
         assert "0.8" in text
 
+    def test_build_reframing_includes_anchor_kernpunkte(self):
+        # Fix 4 (Codex-Verifier, Low/Spec-Gap): Spec verlangt "Reframing-Zeile
+        # + 2-3 Anchor-Kernpunkte" -- bisher fehlte diese Zeile komplett.
+        anchor = _mk_anchor({"login", "backend", "modul"}, ["c:/repo/auth"])
+        s = {"total": 0.8, "token_shift": 0.9, "path_divergence": 0.7,
+             "phase_flip": 0.0, "window_phase": "build"}
+        text = tj.build_reframing(anchor, s)
+        assert "Kernpunkte des Auftrags" in text
+        assert any(tok in text for tok in anchor["tokens"])
+        assert "c:/repo/auth" in text
+
     def _payload(self, sid, tool="Edit", path="c:/other/x.py"):
         return {"session_id": sid, "tool_name": tool,
                 "tool_input": {"file_path": path}}
@@ -239,6 +303,44 @@ class TestOutputAndRun:
                               state_dir=str(tmp_path),
                               log_path=str(tmp_path / "t.jsonl"), now=float(i))
             assert out == ""   # eigener Test: on-track feuert NIE
+
+
+class TestReAnchorWindowReset:
+    """Fix 1 (Codex-Verifier, Medium): Re-Anchoring muss das Call-Fenster des
+    alten Themas kappen, sonst feuert der erste Call nach einem legitimen
+    Themenwechsel faelschlich (Codex-Repro: total 0.83)."""
+
+    def _payload(self, sid, path):
+        return {"session_id": sid, "tool_name": "Edit",
+                "tool_input": {"file_path": path}}
+
+    def test_reanchor_resets_window_no_false_fire(self, tmp_path):
+        import prompt_prelude as pp
+        sid = "s-reanchor"
+        anchor_a = pp.build_anchor("Baue Login-Modul in c:/repo/authmod",
+                                   "code-impl", "quiet", now=1.0)
+        pp.save_anchor(sid, str(tmp_path), anchor_a)
+        log = str(tmp_path / "t.jsonl")
+        # 15 On-Topic-Calls zu Thema A fuellen das Fenster komplett (WINDOW_K).
+        for i in range(15):
+            out = tj.run_traj(self._payload(sid, "c:/repo/authmod/main.py"),
+                              state_dir=str(tmp_path), log_path=log, now=1.0 + i)
+            assert out == ""
+
+        # Legitimer Themenwechsel: neuer Anchor B ersetzt Anchor A.
+        anchor_b = pp.build_anchor("Baue Payment-Modul in c:/repo/paymod",
+                                   "code-impl", "quiet", now=2.0)
+        pp.save_anchor(sid, str(tmp_path), anchor_b)
+
+        # Erster (on-topic!) Call zu B darf NICHT feuern, obwohl das Fenster
+        # noch voller alter A-Pfade ist.
+        out = tj.run_traj(self._payload(sid, "c:/repo/paymod/main.py"),
+                          state_dir=str(tmp_path), log_path=log, now=20.0)
+        assert out == ""
+
+        w = tj.load_window(sid, str(tmp_path))
+        assert len(w["calls"]) == 1
+        assert w["anchor_t"] == anchor_b["t"]
 
 
 class TestE2E:
