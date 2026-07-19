@@ -5,6 +5,7 @@ letzten Arbeits-Prompt (Goal-Anchor) deterministisch — keine Daemon-Calls,
 fail-soft, Exit immer 0."""
 import json
 import os
+import posixpath
 import re
 import sys
 import time
@@ -67,11 +68,28 @@ _BASH_PATH_RE = re.compile(r"(?:[A-Za-z]:)?[\w.~-]*(?:[\\/][\w.~-]+)+")
 
 
 def _norm(p):
-    return str(p).replace("\\", "/").lower()
+    s = str(p).replace("\\", "/").lower()
+    if not s:
+        return s
+    # posixpath.normpath loest ".."/"." auf, sonst gilt ".../a/../b" faelschlich
+    # als Unterpfad von ".../a" (Codex-Finding 2). normpath("") == "." waere
+    # eine falsche Ueberraschung fuer einen leeren Input -> davor abgefangen;
+    # normpath ist sonst fail-soft (wirft nie).
+    return posixpath.normpath(s)
+
+
+_QUOTED_RE = re.compile(r'"([^"]+)"|\'([^\']+)\'')
 
 
 def extract_tool_paths(tool_name, tool_input):
-    """Berührte Pfade aus tool_input — fail-soft, fehlende Felder egal."""
+    """Berührte Pfade aus tool_input — fail-soft, fehlende Felder egal.
+
+    Gequotete Bash-Pfade mit Leerzeichen ("C:\\repo space\\x.py") werden vor
+    dem Regex-Scan als Ganzes herausgezogen (Codex-Finding 3), sonst zerlegt
+    _BASH_PATH_RE sie am Leerzeichen in Fragmente. Ungequotete Pfade mit
+    Leerzeichen bleiben bewusst unerkannt -- die sind auch fuer eine echte
+    Shell mehrdeutig (welches Token gehoert noch zum Pfad?).
+    """
     if not isinstance(tool_input, dict):
         return []
     paths = []
@@ -81,7 +99,17 @@ def extract_tool_paths(tool_name, tool_input):
             paths.append(_norm(v.strip()))
     cmd = tool_input.get("command")
     if isinstance(cmd, str):
-        paths.extend(_norm(m) for m in _BASH_PATH_RE.findall(cmd))
+        rest_parts = []
+        last_end = 0
+        for m in _QUOTED_RE.finditer(cmd):
+            inner = m.group(1) if m.group(1) is not None else m.group(2)
+            rest_parts.append(cmd[last_end:m.start()])
+            last_end = m.end()
+            if re.search(r"[\\/]", inner):
+                paths.append(_norm(inner))
+        rest_parts.append(cmd[last_end:])
+        rest = " ".join(rest_parts)
+        paths.extend(_norm(m) for m in _BASH_PATH_RE.findall(rest))
     # Dedupe bei stabiler Reihenfolge
     seen, out = set(), []
     for p in paths:

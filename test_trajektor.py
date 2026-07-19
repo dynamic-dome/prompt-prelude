@@ -59,6 +59,16 @@ class TestExtractToolPaths:
         paths = tj.extract_tool_paths("Bash", {"command": r"pytest C:\repo\tests\test_x.py"})
         assert "c:/repo/tests/test_x.py" in paths
 
+    def test_bash_command_quoted_path_with_spaces(self):
+        # Fix B (Codex-Finding 3, Rest): ein gequoteter Pfad mit Leerzeichen
+        # ("C:\repo space\tests\test_x.py") wurde bisher von _BASH_PATH_RE in
+        # Fragmente zerlegt (Separator-Grenze bei Leerzeichen). Ungequotete
+        # Leerzeichen-Pfade bleiben bewusst außen vor (auch fuer eine echte
+        # Shell mehrdeutig).
+        paths = tj.extract_tool_paths(
+            "Bash", {"command": 'pytest "C:\\repo space\\tests\\test_x.py" -q'})
+        assert paths == ["c:/repo space/tests/test_x.py"]
+
 
 def _mk_window(specs):
     """specs: Liste (tool, [paths]) oder (tool, [paths], is_test) -> Window-Dict."""
@@ -122,6 +132,21 @@ class TestDriftScore:
         assert tj.drift_score(anchor, w)["path_divergence"] == 1.0
 
         w_ok = _mk_window([("Edit", ["c:/repo/auth/sub/main.py"])])
+        assert tj.drift_score(anchor, w_ok)["path_divergence"] == 0.0
+
+    def test_path_divergence_normalizes_dotdot_traversal(self):
+        # Fix A (Codex-Finding 2, Rest): "c:/repo/auth/../other/main.py" ist
+        # ohne Normalisierung fälschlich "innerhalb" von c:/repo/auth (reiner
+        # Prefix-Check auf den unnormalisierten String). Normalisierung
+        # passiert in _norm() (via extract_tool_paths), daher hier über
+        # extract_tool_paths statt direkt per _mk_window mit Rohstring.
+        anchor = _mk_anchor({"auth"}, ["c:/repo/auth"])
+        paths = tj.extract_tool_paths("Edit", {"file_path": "c:/repo/auth/../other/main.py"})
+        w = _mk_window([("Edit", paths)])
+        assert tj.drift_score(anchor, w)["path_divergence"] == 1.0
+
+        paths_ok = tj.extract_tool_paths("Edit", {"file_path": "c:/repo/auth/./sub/x.py"})
+        w_ok = _mk_window([("Edit", paths_ok)])
         assert tj.drift_score(anchor, w_ok)["path_divergence"] == 0.0
 
     def test_empty_window_tokens_max_shift(self):
