@@ -163,3 +163,16 @@ python -m pytest test_prompt_prelude.py -q
 ## Registrierung
 Als erstes `UserPromptSubmit`-Matcher-Objekt in `~/.claude/settings.json`, mit
 explizitem `"timeout": 2` (gegen den 30s-Default-Hänger). Reine-stdlib, kein pip.
+
+## Trajektor (PostToolUse-Schwester, T-12)
+
+`trajektor.py` beobachtet den Tool-Call-Strom und misst Drift gegen den letzten
+Arbeits-Prompt (Goal-Anchor, geschrieben von prompt_prelude beim Gate-Pass).
+Deterministischer 3-Komponenten-Score (token_shift 0.5 / path_divergence 0.3 /
+phase_flip 0.2), Hysterese fire=0.65/clear=0.45, Cooldown 10 Calls, max. 3
+Fires/Session. Bei Fire: Reframing-Zeile als additionalContext + sichtbare
+systemMessage. Fail-soft, Exit immer 0, keine Daemon-Calls.
+
+Telemetrie: `trajektor.jsonl`, Ära **t1** (`tv`-Feld) — nie mit
+`prompt_prelude.jsonl`-Ären mischen. Kalibrierung der Schwellen ist bewusst
+nachgelagert (Telemetrie-Auswertung analog T-11).

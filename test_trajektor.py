@@ -1,5 +1,8 @@
 import json
 import os
+import subprocess
+import sys
+
 import pytest
 
 import trajektor as tj
@@ -226,3 +229,65 @@ class TestOutputAndRun:
                               state_dir=str(tmp_path),
                               log_path=str(tmp_path / "t.jsonl"), now=float(i))
             assert out == ""   # eigener Test: on-track feuert NIE
+
+
+class TestE2E:
+    SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trajektor.py")
+
+    def _run(self, payload):
+        return subprocess.run([sys.executable, self.SCRIPT],
+                              input=json.dumps(payload).encode("utf-8"),
+                              capture_output=True, timeout=10)
+
+    def test_e2e_exit_zero_and_silent(self):
+        r = self._run({"session_id": "e2e-tj", "tool_name": "Read",
+                       "tool_input": {"file_path": "C:/x/y.py"}})
+        assert r.returncode == 0
+        assert r.stdout.strip() == b""   # kein Anchor -> still
+
+    def test_e2e_garbage_stdin_exit_zero(self):
+        r = subprocess.run([sys.executable, self.SCRIPT], input=b"{kaputt",
+                           capture_output=True, timeout=10)
+        assert r.returncode == 0 and r.stdout.strip() == b""
+
+
+class TestDeterminism:
+    def test_same_stream_same_log(self, tmp_path):
+        import prompt_prelude as pp
+        stream = [{"session_id": "det", "tool_name": "Edit",
+                   "tool_input": {"file_path": f"c:/other/f{i}.css"}} for i in range(8)]
+        logs = []
+        for run_dir in ("a", "b"):
+            d = tmp_path / run_dir
+            d.mkdir()
+            pp.save_anchor("det", str(d), pp.build_anchor(
+                "Baue Login in c:/repo/auth", "code-impl", "quiet", now=1.0))
+            log = d / "t.jsonl"
+            for i, p in enumerate(stream):
+                tj.run_traj(p, state_dir=str(d), log_path=str(log), now=float(i))
+            # ts raus, Rest muss byte-identisch sein
+            recs = [json.loads(l) for l in log.read_text(encoding="utf-8").splitlines()]
+            for r in recs:
+                r.pop("t", None)
+            logs.append(json.dumps(recs, sort_keys=True))
+        assert logs[0] == logs[1]
+
+
+class TestOverhead:
+    def test_median_under_budget(self, tmp_path):
+        import statistics
+        import time as _time
+        import prompt_prelude as pp
+        pp.save_anchor("perf", str(tmp_path), pp.build_anchor(
+            "Perf-Anchor c:/repo/x", "code-impl", "quiet", now=1.0))
+        times = []
+        for i in range(20):
+            t0 = _time.perf_counter()
+            tj.run_traj({"session_id": "perf", "tool_name": "Read",
+                         "tool_input": {"file_path": f"c:/repo/x/{i}.py"}},
+                        state_dir=str(tmp_path), log_path=str(tmp_path / "t.jsonl"),
+                        now=float(i))
+            times.append((_time.perf_counter() - t0) * 1000)
+        # In-Process-Hot-Path; der Python-Start (~50-100ms) kommt real dazu.
+        # Spec-Budget 150ms gesamt -> Hot-Path muss deutlich darunter liegen.
+        assert statistics.median(times) < 50, f"Median {statistics.median(times):.1f}ms"
