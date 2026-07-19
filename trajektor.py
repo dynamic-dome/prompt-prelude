@@ -92,6 +92,73 @@ def update_window(window, tool_name, paths):
             "call_count": window["call_count"] + 1}
 
 
+W_TOKEN, W_PATH, W_PHASE = 0.5, 0.3, 0.2
+
+_EXPLORE_TOOLS = {"Read", "Grep", "Glob"}
+_BUILD_TOOLS = {"Edit", "Write", "NotebookEdit"}
+_TEST_MARKERS = ("pytest", "test", "npm run", "cargo test", "go test")
+
+
+def window_tokens(window):
+    toks = set()
+    for call in window["calls"]:
+        for p in call["paths"]:
+            toks |= significant_tokens(p.replace("/", " ").replace(".", " ").replace("_", " ").replace("-", " "))
+    return toks
+
+
+def phase_from_tools(window):
+    tools = [c["tool"] for c in window["calls"]]
+    if not tools:
+        return "mixed"
+    n = len(tools)
+    explore = sum(1 for t in tools if t in _EXPLORE_TOOLS)
+    build = sum(1 for t in tools if t in _BUILD_TOOLS)
+    verify = sum(1 for c in window["calls"] if c["tool"] == "Bash"
+                 and any(m in " ".join(c["paths"]) for m in _TEST_MARKERS))
+    if verify >= max(1, n // 2):
+        return "verify"
+    if build > n * 0.6:
+        return "build"
+    if explore > n * 0.6:
+        return "explore"
+    return "mixed"
+
+
+def _jaccard(a, b):
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def drift_score(anchor, window):
+    """Deterministischer 3-Komponenten-Drift-Score in [0,1]."""
+    if not window["calls"]:
+        return {"total": 0.0, "token_shift": 0.0, "path_divergence": 0.0,
+                "phase_flip": 0.0, "window_phase": "mixed"}
+    a_toks = set(anchor.get("tokens") or [])
+    w_toks = window_tokens(window)
+    token_shift = 1.0 - _jaccard(a_toks, w_toks) if a_toks and w_toks else (1.0 if a_toks else 0.0)
+
+    a_dirs = [d for d in (anchor.get("dirs") or [])]
+    all_paths = [p for c in window["calls"] for p in c["paths"]]
+    if a_dirs and all_paths:
+        outside = sum(1 for p in all_paths if not any(d in p for d in a_dirs))
+        path_divergence = outside / len(all_paths)
+    else:
+        path_divergence = 0.0  # ohne Anchor-Pfade kein Urteil (neutral, kein Fehlalarm)
+
+    window_phase = phase_from_tools(window)
+    anchor_phase = anchor.get("phase") or "quiet"
+    # planning-Anchor + reine build-Kette = klarer Phasenwechsel; quiet urteilt nicht
+    phase_flip = 1.0 if (anchor_phase == "planning" and window_phase == "build") else 0.0
+
+    total = W_TOKEN * token_shift + W_PATH * path_divergence + W_PHASE * phase_flip
+    return {"total": round(total, 4), "token_shift": round(token_shift, 4),
+            "path_divergence": round(path_divergence, 4),
+            "phase_flip": phase_flip, "window_phase": window_phase}
+
+
 def main():
     try:
         raw = _read_stdin_utf8()

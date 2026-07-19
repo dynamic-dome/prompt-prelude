@@ -49,3 +49,67 @@ class TestExtractToolPaths:
     def test_missing_fields_empty(self):
         assert tj.extract_tool_paths("WebSearch", {}) == []
         assert tj.extract_tool_paths("Bash", None) == []
+
+
+def _mk_window(specs):
+    """specs: Liste (tool, [paths]) -> Window-Dict."""
+    w = tj._default_window()
+    for tool, paths in specs:
+        w = tj.update_window(w, tool, paths)
+    return w
+
+
+def _mk_anchor(tokens, dirs, phase="quiet"):
+    return {"t": 0, "prompt_preview": "x", "domain": "code-impl",
+            "phase": phase, "tokens": sorted(tokens), "dirs": sorted(dirs)}
+
+
+class TestDriftScore:
+    def test_on_track_low_score(self):
+        anchor = _mk_anchor({"trajektor", "drift", "hook"}, ["c:/repo/prompt-prelude"])
+        w = _mk_window([("Edit", ["c:/repo/prompt-prelude/trajektor.py"]),
+                        ("Read", ["c:/repo/prompt-prelude/test_trajektor.py"])])
+        s = tj.drift_score(anchor, w)
+        assert s["total"] < 0.45          # unter TRAJ_CLEAR: eindeutig on-track
+        assert s["path_divergence"] == 0.0
+
+    def test_hard_jump_high_score(self):
+        anchor = _mk_anchor({"login", "modul", "backend"}, ["c:/repo/auth"])
+        w = _mk_window([("Edit", ["c:/other/site/css/theme.css"]),
+                        ("Edit", ["c:/other/site/index.html"]),
+                        ("Bash", ["c:/other/site/build.sh"])])
+        s = tj.drift_score(anchor, w)
+        assert s["total"] >= 0.65         # über TRAJ_FIRE
+
+    def test_phase_flip_contributes(self):
+        anchor = _mk_anchor({"analyse", "code"}, [], phase="planning")
+        w = _mk_window([("Edit", ["c:/r/a.py"]), ("Write", ["c:/r/b.py"]),
+                        ("Edit", ["c:/r/a.py"])])
+        s = tj.drift_score(anchor, w)
+        assert s["window_phase"] == "build"
+        assert s["phase_flip"] == 1.0
+
+    def test_empty_window_zero(self):
+        s = tj.drift_score(_mk_anchor({"x"}, []), tj._default_window())
+        assert s["total"] == 0.0
+
+    def test_no_anchor_dirs_no_divergence(self):
+        # Anchor ohne Pfade: path_divergence neutral 0 (nicht 1) — kein Fehlalarm
+        anchor = _mk_anchor({"refactor", "tests"}, [])
+        w = _mk_window([("Edit", ["c:/anywhere/x.py"])])
+        assert tj.drift_score(anchor, w)["path_divergence"] == 0.0
+
+
+class TestPhaseFromTools:
+    def test_explore(self):
+        assert tj.phase_from_tools(_mk_window([("Read", []), ("Grep", []), ("Glob", [])])) == "explore"
+
+    def test_build(self):
+        assert tj.phase_from_tools(_mk_window([("Edit", []), ("Write", []), ("Edit", [])])) == "build"
+
+    def test_verify(self):
+        w = _mk_window([("Bash", ["tests/test_a.py"]), ("Bash", ["pytest"])])
+        assert tj.phase_from_tools(w) == "verify"
+
+    def test_mixed(self):
+        assert tj.phase_from_tools(_mk_window([("Read", []), ("Edit", [])])) == "mixed"
