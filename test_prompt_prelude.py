@@ -1,4 +1,7 @@
 import json as _json
+import os
+
+import pytest
 
 import prompt_prelude as pp
 
@@ -1390,3 +1393,44 @@ class TestV7GhostMentorRun:
         out = pp.run({"prompt": KEYWORD_UI_PROMPT, "session_id": "s"},
                      http_fn=_mk_http(), **self._kw(tmp_path))
         assert "· mentor=1" in _json.loads(out)["systemMessage"]
+
+
+class TestGoalAnchor:
+    def test_build_anchor_schema(self):
+        a = pp.build_anchor("Baue den Trajektor in trajektor.py fertig",
+                            "code-impl", "planning", now=1000.0)
+        assert a["domain"] == "code-impl" and a["phase"] == "planning"
+        assert a["t"] == 1000.0
+        assert "trajektor" in a["tokens"]          # signifikantes Token
+        assert "baue" in a["tokens"]
+        assert a["prompt_preview"].startswith("Baue den Trajektor")
+
+    def test_build_anchor_extracts_dirs(self):
+        a = pp.build_anchor(r"Fix in C:\Users\domes\AI\Hooks-bau\prompt-prelude\prompt_prelude.py bitte",
+                            "debug", "quiet", now=1.0)
+        assert any("prompt-prelude" in d for d in a["dirs"])
+
+    def test_save_and_load_anchor_roundtrip(self, tmp_path):
+        trajektor = pytest.importorskip("trajektor")  # existiert erst ab Task 2
+        a = pp.build_anchor("Refactor XY", "code-impl", "quiet", now=1.0)
+        pp.save_anchor("sess1", str(tmp_path), a)
+        loaded = trajektor.load_anchor("sess1", str(tmp_path))
+        assert loaded == a
+
+    def test_save_anchor_fail_soft(self):
+        pp.save_anchor("s", "Z:\\nonexistent\\dir\\x", {"t": 1})  # darf nicht werfen
+
+    def test_run_writes_anchor_on_gate_pass(self, tmp_path):
+        payload = {"prompt": "Implementiere bitte das neue Login-Modul mit Tests",
+                   "session_id": "anchor-sess"}
+        pp.run(payload, atlas_root=str(tmp_path / "no-atlas"),
+               state_dir=str(tmp_path), log_path=str(tmp_path / "t.jsonl"),
+               now=1000.0, http_fn=lambda *a, **k: None)
+        assert os.path.exists(pp.anchor_path("anchor-sess", str(tmp_path)))
+
+    def test_run_no_anchor_on_skip(self, tmp_path):
+        payload = {"prompt": "ok", "session_id": "skip-sess"}  # trivial -> skip
+        pp.run(payload, atlas_root=str(tmp_path / "no-atlas"),
+               state_dir=str(tmp_path), log_path=str(tmp_path / "t.jsonl"),
+               now=1000.0, http_fn=lambda *a, **k: None)
+        assert not os.path.exists(pp.anchor_path("skip-sess", str(tmp_path)))

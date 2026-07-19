@@ -358,6 +358,56 @@ def save_fired(session_id, state_dir, fired):
         pass
 
 
+TOKEN_RE = re.compile(r"[a-zA-ZäöüÄÖÜß]{4,}")
+# Pfadartige Strings im Prompt: Windows- (C:\..., .\foo\bar) oder POSIX-artig (a/b/c.py)
+PROMPT_PATH_RE = re.compile(r"(?:[A-Za-z]:[\\/]|\.{0,2}[\\/])?(?:[\w.-]+[\\/])+[\w.-]+")
+
+
+def significant_tokens(text):
+    """Signifikante Tokens (>=4 Zeichen, ohne Stopwörter) — geteilt mit Trajektor."""
+    if not isinstance(text, str):
+        return set()
+    return set(TOKEN_RE.findall(text.lower())) - STOP_WORDS
+
+
+def extract_prompt_paths(prompt):
+    """Pfadartige Strings aus dem Prompt; zurück kommen die Verzeichnis-Anteile."""
+    dirs = set()
+    for m in PROMPT_PATH_RE.findall(prompt or ""):
+        norm = m.replace("\\", "/").rstrip("/")
+        parent = norm.rsplit("/", 1)[0] if "/" in norm else norm
+        if parent:
+            dirs.add(parent.lower())
+    return sorted(dirs)
+
+
+def build_anchor(prompt, domain, phase, now):
+    return {
+        "t": now,
+        "prompt_preview": str(prompt).strip()[:120],
+        "domain": domain,
+        "phase": phase,
+        "tokens": sorted(significant_tokens(prompt)),
+        "dirs": extract_prompt_paths(prompt),
+    }
+
+
+def anchor_path(session_id, state_dir):
+    return os.path.join(state_dir, f"anchor_{_safe_session(session_id)}.json")
+
+
+def save_anchor(session_id, state_dir, anchor):
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+        p = anchor_path(session_id, state_dir)
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(anchor, f, ensure_ascii=False)
+        os.replace(tmp, p)
+    except Exception:
+        pass
+
+
 def cleanup_state(state_dir, now, max_age_days=7):
     """Dedupe-Dateien älter als max_age_days löschen. Fail-soft, nie werfen."""
     try:
@@ -892,6 +942,9 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
                                      work_signals=work_signals), decision_log_path)
         return make_skip_status("low_domain_confidence", domain, phase)
 
+    # T-12 Goal-Anchor: jeder Prompt, der das Präzisions-Gate passiert, re-anchort
+    # den Trajektor (Anchor-Politik: letzter Arbeits-Prompt; Kurz-Zurufe skippen oben).
+    save_anchor(session_id, state_dir, build_anchor(prompt, domain, phase, now))
 
     if not routing:
         log_telemetry({"t": now, "skip": "no_routing", "session": session_id,
