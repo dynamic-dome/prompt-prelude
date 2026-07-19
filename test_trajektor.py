@@ -99,6 +99,17 @@ class TestDriftScore:
         w = _mk_window([("Edit", ["c:/anywhere/x.py"])])
         assert tj.drift_score(anchor, w)["path_divergence"] == 0.0
 
+    def test_empty_window_tokens_max_shift(self):
+        # Fenster mit Calls, aber ohne signifikante Pfad-Tokens (z.B. WebSearch,
+        # Bash ohne Pfad-Argument): token_shift schlägt voll aus (1.0), aber
+        # ohne Anchor-Pfad-Urteil bleibt total unter TRAJ_FIRE (kein Fehlalarm).
+        anchor = _mk_anchor({"login", "backend"}, [])
+        w = _mk_window([("WebSearch", []), ("TodoWrite", []), ("Bash", [])])
+        s = tj.drift_score(anchor, w)
+        assert s["token_shift"] == 1.0
+        assert s["path_divergence"] == 0.0
+        assert s["total"] == 0.5  # 0.5*1.0 — unterhalb TRAJ_FIRE (0.65)
+
 
 class TestPhaseFromTools:
     def test_explore(self):
