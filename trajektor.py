@@ -159,6 +159,34 @@ def drift_score(anchor, window):
             "phase_flip": phase_flip, "window_phase": window_phase}
 
 
+TRAJ_FIRE = 0.65
+TRAJ_CLEAR = 0.45
+COOLDOWN_CALLS = 10
+SESSION_FIRE_CAP = 3
+
+
+def decide(window, total):
+    """Hysterese + Cooldown + Session-Cap. Gibt (status, updated_window) zurück.
+
+    Reihenfolge der Gates ist Absicht: cap vor cooldown vor hysterese —
+    Telemetrie soll den bindendsten Grund nennen."""
+    w = dict(window)
+    if total <= TRAJ_CLEAR and not w["armed"]:
+        w["armed"] = True          # Score beruhigt -> wieder scharf
+    if total < TRAJ_FIRE:
+        return "below", w
+    if w["fires"] >= SESSION_FIRE_CAP:
+        return "cap", w
+    if w["call_count"] < w["cooldown_until"]:
+        return "cooldown", w
+    if not w["armed"]:
+        return "not_armed", w
+    w["armed"] = False
+    w["cooldown_until"] = w["call_count"] + COOLDOWN_CALLS
+    w["fires"] += 1
+    return "fire", w
+
+
 def main():
     try:
         raw = _read_stdin_utf8()

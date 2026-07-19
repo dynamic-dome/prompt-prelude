@@ -124,3 +124,47 @@ class TestPhaseFromTools:
 
     def test_mixed(self):
         assert tj.phase_from_tools(_mk_window([("Read", []), ("Edit", [])])) == "mixed"
+
+
+class TestDecide:
+    def _w(self, call_count=20, armed=True, cooldown_until=0, fires=0):
+        return {**tj._default_window(), "call_count": call_count,
+                "armed": armed, "cooldown_until": cooldown_until, "fires": fires}
+
+    @pytest.mark.parametrize("total,armed,cooldown_until,fires,expected", [
+        (0.70, True, 0, 0, "fire"),      # klarer Fire
+        (0.50, True, 0, 0, "below"),     # zwischen clear und fire: nichts
+        (0.70, False, 0, 0, "not_armed"),# über fire, aber Hysterese offen
+        (0.70, True, 25, 0, "cooldown"), # Cooldown aktiv (call_count 20 < 25)
+        (0.70, True, 0, 3, "cap"),       # Session-Cap erreicht
+    ])
+    def test_table(self, total, armed, cooldown_until, fires, expected):
+        status, _ = tj.decide(self._w(armed=armed, cooldown_until=cooldown_until,
+                                      fires=fires), total)
+        assert status == expected
+
+    def test_fire_sets_cooldown_and_disarms(self):
+        status, w = tj.decide(self._w(call_count=20), 0.9)
+        assert status == "fire"
+        assert w["armed"] is False and w["cooldown_until"] == 30 and w["fires"] == 1
+
+    def test_rearm_below_clear(self):
+        status, w = tj.decide(self._w(armed=False), 0.30)   # unter TRAJ_CLEAR
+        assert status == "below" and w["armed"] is True
+
+    def test_no_rearm_between_clear_and_fire(self):
+        # 0.50 liegt zwischen clear (0.45) und fire (0.65): Status "below"
+        # (kein Fire-Kandidat), aber KEIN Re-Arm — armed bleibt False.
+        status, w = tj.decide(self._w(armed=False), 0.50)
+        assert status == "below" and w["armed"] is False
+
+    def test_flapping_score_fires_once(self):
+        # 0.7 -> 0.6 -> 0.7: ohne Absinken unter clear kein zweites Fire
+        w = self._w(call_count=0, cooldown_until=-1)
+        w["call_count"] = 50  # jenseits jedes Cooldowns
+        s1, w = tj.decide(w, 0.7)
+        w["call_count"] += 20
+        s2, w = tj.decide(w, 0.6)   # unter fire -> below, kein Re-Arm (0.6 > clear)
+        w["call_count"] += 20
+        s3, w = tj.decide(w, 0.7)   # über fire, aber nicht armed -> not_armed
+        assert (s1, s2, s3) == ("fire", "below", "not_armed")
