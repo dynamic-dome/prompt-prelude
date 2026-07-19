@@ -1,7 +1,8 @@
 __pycache__/
 .pytest_cache/
 prompt_prelude.jsonl
+prelude_decisions.jsonl
+trajektor.jsonl
 .dedupe/
 .agent-memory/
-prelude_decisions.jsonl
 pytest_tmp/
