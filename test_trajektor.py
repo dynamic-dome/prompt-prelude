@@ -172,6 +172,16 @@ class TestDecide:
         s3, w = tj.decide(w, 0.7)   # über fire, aber nicht armed -> not_armed
         assert (s1, s2, s3) == ("fire", "below", "not_armed")
 
+    def test_boundary_exact_fire_threshold(self):
+        # total == TRAJ_FIRE (0.65) zählt als Fire-Kandidat (decide nutzt total < TRAJ_FIRE für below)
+        status, w = tj.decide(self._w(call_count=20), tj.TRAJ_FIRE)
+        assert status == "fire"
+
+    def test_boundary_exact_clear_threshold(self):
+        # total == TRAJ_CLEAR (0.45) re-armt (decide nutzt total <= TRAJ_CLEAR)
+        status, w = tj.decide(self._w(armed=False), tj.TRAJ_CLEAR)
+        assert status == "below" and w["armed"] is True
+
 
 class TestOutputAndRun:
     def test_make_ptu_output_schema(self):

@@ -372,6 +372,8 @@ def significant_tokens(text):
 
 def extract_prompt_paths(prompt):
     """Pfadartige Strings aus dem Prompt; zurück kommen die Verzeichnis-Anteile."""
+    if not isinstance(prompt, str):
+        return []
     dirs = set()
     for m in PROMPT_PATH_RE.findall(prompt or ""):
         norm = m.replace("\\", "/").rstrip("/")
