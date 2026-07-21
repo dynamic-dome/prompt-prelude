@@ -276,7 +276,10 @@ class TestTelemetry:
         ev = _json.loads(open(log, encoding="utf-8").read().strip())
         # v4 = Iteration 3 (stdin-UTF-8-Fix): Live-Daten davor sind Mojibake-
         # vergiftet, Auswertungen NIE über die Versionsgrenze mischen.
-        assert ev["v"] == pp.TELEMETRY_SCHEMA_VERSION == 7
+        # v8 = Skill-Routing (2026-07-22): fired-Events tragen skill_hint/-count.
+        # Dieser Test ist absichtlich hart gepinnt — er zwingt dazu, bei jedem
+        # Bump zu entscheiden, ob Auswertungen den Schnitt überspringen dürfen.
+        assert ev["v"] == pp.TELEMETRY_SCHEMA_VERSION == 8
 
 
 class TestExtractQuery:

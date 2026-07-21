@@ -90,6 +90,54 @@ record_id-Zitat-Zweig (`atlas/project:X` via memory_cite) bleibt blind. Voll-Met
 braucht eine Tracker-Erweiterung (Argument-Logging: record_id + file_path) — cross-project,
 mit Privacy-Implikation. **Bewusst NICHT still halbgebaut.** Owner-Optionen im Wrap-up.
 
+## Befund 8 (2026-07-22): der Hook bewarb zwei Skills, die es nicht mehr gibt
+Beim Bau des Skill-Routings aufgefallen, nicht gesucht: `DOMAIN_ROUTING["debug"]`
+empfahl **`diagnose-hitl`** — der liegt in `~/.claude/skills/_archive/`.
+`DOMAIN_ROUTING["ui-frontend"]` empfahl **`modern-web-design`**, dessen Plugin in
+`enabledPlugins` auf `false` steht. Beide Zeilen liefen monatelang live und
+schickten den Agenten auf Skills, die er nicht laden kann.
+
+**Ursache:** Routing-Strings und Skill-Bestand haben keine Kopplung — eine
+Aufräumrunde im `~/.claude/skills/`-Ordner merkt nichts vom Hook.
+**Umgesetzt:** beide Zeilen korrigiert (→ `superpowers:systematic-debugging`
+bzw. `web-design-guidelines`) + Regressions-Guard `TestNoDeadSkillReferences`
+(hermetisch: feste Liste bekannter Leichen, kein Dateisystem-Zugriff, damit der
+Test nicht vom Rechner abhängt).
+**Offen:** Der Guard kennt nur, was jemand einträgt. Ein Live-Abgleich gegen
+`~/.claude/skills/` + `enabledPlugins` wäre schärfer, wäre aber nicht hermetisch
+— bewusst nicht gebaut.
+
+## Befund 9 (2026-07-22): Skill-Routing als zweiter, härterer Kanal
+Motivation direkt aus Befund 7: der RAG-Kanal liefert Caps fertig mit, deshalb
+kann `eval_compliance` "ignoriert" nicht von "schon geliefert" trennen und misst
+nur +3pp. Ein SKILL.md-Body lässt sich **nicht** vorab injizieren — der Agent
+ruft ihn auf oder nicht. Damit ist der Join sauber und die Architekturfrage aus
+T-4 (advisory vs. PreToolUse-Gate) erstmals empirisch entscheidbar.
+
+**Umgesetzt (v8):** `SKILL_RULES` / `SKILL_ROUTING` / `SKILL_PHASE_ROUTING`,
+imperativ formuliert mit `Skill("name")` und explizitem NICHT samt Begründung;
+Deckel bei 2 Zeilen; eigener Block im Prelude **vor** dem RAG-Auftrag (die
+Aktion vor dem Hintergrundmaterial); Telemetrie `skill_hint`/`skill_hint_count`;
+`eval_skill_routing.py`.
+
+**Baseline vor Einführung (v4+, Fenster 900 s): 37/389 = 10 %** — so oft wurde
+einer der routbaren Skills ohne jeden Hinweis von selbst gerufen. Das ist die
+Latte; ein FOLLOW um 10 % widerlegt den advisory-Kanal endgültig.
+
+**Messfehler-Warnung, teuer gelernt:** Die erste Nutzungsanalyse zählte nur
+`"skill":"…"` (Skill-Tool) und übersah `<command-name>/x</command-name>` — vom
+Menschen getippte Slash-Commands. Dadurch erschienen real benutzte Skills als
+"0 Aufrufe" (`agentic-os:session-bootstrap`: 9 statt 230). `eval_skill_routing`
+zählt beide Quellen. Wer eine Skill-Statistik baut: **beide Kanäle, immer.**
+
+**Offener Vorbehalt (nicht gelöst):** Der `planning`-Zweig hängt hinter dem
+bestehenden `work_signal`-Gate. Ein reiner Überlegungs-Prompt ("ich überlege ein
+konzept für die neue oberfläche…") wird als `no_work_signal` geskippt — genau
+der Prompt-Typ, für den `office-hours`/`brainstorming` gedacht sind. Das
+Phasen-Routing dürfte deshalb selten feuern. Erst messen (`skill_hint`-Rate für
+die Planungszeile), dann entscheiden, ob das Gate für diesen Zweig aufgeweicht
+wird — nicht vorab am Gate drehen.
+
 ## Status (aktualisiert 2026-07-02 abend, Iteration 1)
 - Befund 1: `domain+phase`-Key + RAG-Bezug-Re-Arm umgesetzt (frühere Session).
   **Offen:** Re-Arm nach N Prompts (State-Format `set` → `{key: fired_at}`) —

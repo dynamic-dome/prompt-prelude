@@ -180,12 +180,16 @@ def detect_phase(prompt):
 
 
 DOMAIN_ROUTING = {
+    # Skill-Namen in diesen Zeilen MÜSSEN installiert sein — sonst wirbt der Hook
+    # für Totes. Stand 2026-07-22 bereinigt: "modern-web-design" entfernt (Plugin
+    # steht in enabledPlugins auf false), "diagnose-hitl" entfernt (liegt in
+    # ~/.claude/skills/_archive/). Bei Skill-Aufräumrunden hier mit nachziehen.
     "ui-frontend":   "Durchsuche das Capability-RAG (memory_search) nach UI-/Design-Skills "
-                     "(z.B. frontend-design, modern-web-design), bevor du einen Ansatz festlegst.",
+                     "(z.B. frontend-design, web-design-guidelines), bevor du einen Ansatz festlegst.",
     "data-analysis": "Prüfe das Capability-RAG nach Daten-Viz-Skills (z.B. d3js-visualization) "
                      "und passenden Auswertungs-Patterns.",
     "workflow":      "Prüfe das Capability-RAG nach Orchestrierungs-/Workflow-Skills und Multi-Agent-Patterns.",
-    "debug":         "Starte mit systematic-debugging bzw. diagnose-hitl und reproduziere den Fehler, bevor du fixt.",
+    "debug":         "Starte mit superpowers:systematic-debugging und reproduziere den Fehler, bevor du fixt.",
     "research":      "Prüfe die NotebookLM-Registry und deep-research, bevor du aus dem Gedächtnis antwortest.",
     "code-impl":     "Durchsuche das Capability-RAG (memory_search) nach passenden Skills/Patterns, bevor du implementierst.",
     # Iteration 2 (v3): breiter Fallback. Der Compliance-Eval (2026-07-03) zeigte,
@@ -210,7 +214,99 @@ def build_rag_routing(domain, phase):
     return lines
 
 
-def compose_context(domain, phase, routing_lines, capabilities=None, query=None, mentors=None):
+# --------------------------------------------------------------- Skill-Routing
+# Warum ein eigener Kanal neben DOMAIN_ROUTING (2026-07-22):
+# Der RAG-Kanal liefert Caps FERTIG mit — der Agent kann sie passiv konsumieren,
+# ohne je selbst zu suchen. Genau deshalb misst eval_compliance dort nur
+# 15%->18% (+3pp, NOTES Befund 7): die Metrik kann "ignoriert" nicht von
+# "schon geliefert" trennen. Ein SKILL-Body lässt sich nicht vorab injizieren —
+# der Agent ruft ihn auf oder nicht. Dieser Kanal ist damit (a) härter, weil
+# er eine Aktion statt Material verlangt, und (b) sauber messbar
+# (eval_skill_routing.py liest Skill-Calls direkt aus den Transkripten).
+#
+# SCOPE-REGEL (Owner-Entscheid 2026-07-22): geroutet wird NUR, wo mehrere Skills
+# um denselben Anlass konkurrieren, oder wo eine harte CLAUDE.md-Regel einen
+# bestimmten Skill verlangt. NICHT geroutet werden projektgebundene Skills
+# (ich-mentor, ich-loop, stackatlas-content-studio, website-check): dort ist die
+# Wahl eindeutig, der Owner erinnert sich an sie, und ein Hinweis wäre Rauschen.
+# Tote Skills (particles-*, test-validator, brain-dump-router) gehören ins
+# Archiv, nicht in dieses Routing.
+#
+# Formulierungs-Politik: imperativ, mit dem fertigen Skill("name")-Aufruf, und —
+# wo es eine echte Verwechslung gibt — mit explizitem NICHT plus Begründung.
+# Das Negativ-Routing ist der eigentliche Wert: es kodiert Abgrenzungen, die
+# sonst nirgends stehen (z.B. dass inhaltliche Code-Reviews über Codex laufen).
+
+SKILL_ROUTING = {
+    "debug":    'Skill("superpowers:systematic-debugging") VOR dem ersten Fix-Versuch — '
+                'erst einen reproduzierbaren Feedback-Loop bauen, dann Hypothesen testen.',
+    "workflow": 'Subagenten im Spiel: Skill("subagent-briefing") für den Auftrag, und '
+                'Skill("verify-subagent-tallies"), sobald ein Subagent eigene Zahlen meldet '
+                '(Wortzahlen, Test-Tallies, Verdikt-Summen) — Selbstauskunft nie ungeprüft übernehmen.',
+}
+
+SKILL_PHASE_ROUTING = {
+    "planning": 'Planungs-Skills auseinanderhalten: Skill("office-hours") wenn noch offen ist, OB '
+                'gebaut wird · Skill("superpowers:brainstorming") für Anforderungen und Design · '
+                'Skill("plan-ceo-review") erst, wenn ein FERTIGER Plan gechallenged werden soll.',
+}
+
+# (keywords, zeile) — Wortgrenzen-Matching über _kw_regex, "*" = Präfix-Stem.
+# Diese Regeln laufen domänen-unabhängig und haben Vorrang vor SKILL_ROUTING.
+SKILL_RULES = (
+    (["pytest", "conftest*", "sqlite", "test-db", "testdatenbank"],
+     'Skill("sqlite-schema-guard") VOR dem ersten pytest-Lauf — Test-DB-Isolation statisch '
+     'beweisen. Globale Regel: niemals Tests gegen Produktions-DBs.'),
+    (["review*", "code-review", "durchsehen", "gegenlesen"],
+     'Code-Review: Skill("review") für den Zwei-Achsen-Diff (Standards + Spec) gegen einen '
+     'fixen Punkt. NICHT code-reviewer — inhaltliche Reviews laufen hier über Codex.'),
+)
+
+# Deckel: der Prelude-Block trägt schon RAG-Auftrag + Caps + Mentoren. Mehr als
+# zwei Skill-Zeilen kippen ihn von "Wegweiser" nach "Wand" (H1-Wording-Politik).
+SKILL_HINT_MAX = 2
+
+
+def build_skill_routing(domain, phase, prompt):
+    """Imperative Skill-Hinweise: welcher Skill hier — und welcher ausdrücklich nicht.
+
+    Priorität: harte Regel-Trigger (SKILL_RULES) vor Domain vor Phase; danach
+    dedupliziert und bei SKILL_HINT_MAX gekappt. Reine Datenauswertung, kein
+    I/O — der Hot-Path des Hooks bleibt unberührt."""
+    low = (prompt or "").lower()
+    lines = []
+    for kws, line in SKILL_RULES:
+        if any(_kw_regex(k).search(low) for k in kws):
+            lines.append(line)
+    if domain in SKILL_ROUTING:
+        lines.append(SKILL_ROUTING[domain])
+    if phase in SKILL_PHASE_ROUTING:
+        lines.append(SKILL_PHASE_ROUTING[phase])
+    out = []
+    for line in lines:
+        if line not in out:
+            out.append(line)
+    return out[:SKILL_HINT_MAX]
+
+
+SKILL_NAME_RE = re.compile(r'Skill\("([^"]+)"\)')
+
+
+def skill_names(lines):
+    """Empfohlene Skill-Namen aus den Routing-Zeilen — Telemetrie-Nutzlast für
+    eval_skill_routing.py. Erfasst nur positive Skill("x")-Aufrufe; ein
+    "NICHT code-reviewer" trägt bewusst keine Klammerform und fällt raus.
+    Reihenfolge bleibt erhalten, Duplikate fliegen."""
+    found = []
+    for line in lines or []:
+        for name in SKILL_NAME_RE.findall(line):
+            if name not in found:
+                found.append(name)
+    return found
+
+
+def compose_context(domain, phase, routing_lines, capabilities=None, query=None,
+                    mentors=None, skills=None):
     """Baut den <prompt_prelude>-Block. Leer-String, wenn nichts Relevantes.
 
     Wording-Politik (H1, Iteration 1): keine Selbst-Entwertung ("kein Befehl",
@@ -220,13 +316,20 @@ def compose_context(domain, phase, routing_lines, capabilities=None, query=None,
 
     Die ECHO-Zeile (erzwungene erste Antwortzeile) war Rollout-Verifikation und
     ist nur noch mit Env PRELUDE_ECHO=1 aktiv (Default: aus)."""
-    if not routing_lines and not capabilities and not mentors:
+    if not routing_lines and not capabilities and not mentors and not skills:
         return ""
     dom = domain or "-"
     parts = []
     if os.environ.get("PRELUDE_ECHO") == "1":
         parts.append(f"ECHO: Beginne deine Antwort mit genau einer Zeile: "
                      f"↳ prelude · [{phase}] [{dom}] · RAG-Auftrag aktiv")
+        parts.append("")
+    if skills:
+        # Bewusst VOR dem RAG-Auftrag: das hier ist die auszuführende Aktion,
+        # der RAG-Auftrag ist Hintergrundmaterial. Der Block soll nicht hinter
+        # zwei Trefferlisten verschwinden.
+        parts.append("SKILL-ROUTING (für diesen Prompt einschlägig):")
+        parts.extend(f"- {s}" for s in skills)
         parts.append("")
     if routing_lines:
         parts.append("RAG-AUFTRAG (vor dem ersten Arbeitsschritt erledigen):")
@@ -246,7 +349,7 @@ def compose_context(domain, phase, routing_lines, capabilities=None, query=None,
     return f'<prompt_prelude phase="{phase}" domain="{dom}">\n{body}\n</prompt_prelude>'
 
 
-def build_system_message(domain, phase, caps, caps_source, mentors=None):
+def build_system_message(domain, phase, caps, caps_source, mentors=None, skills=None):
     """Sichtbare Status-Zeile für den USER (natives systemMessage-Feld, in den
     Claude-Code-Docs 'shown to the user'). Der additionalContext geht nur in
     Claudes Kontext — DAS hier ist der einzige Kanal, den der Mensch am Schirm
@@ -256,7 +359,12 @@ def build_system_message(domain, phase, caps, caps_source, mentors=None):
     n = len(caps or [])
     msg = f"prelude ▸ {domain or '-'} · {phase} · caps={n}({caps_source or 'none'})"
     m = len(mentors or [])
-    return msg + (f" · mentor={m}" if m else "")
+    if m:
+        msg += f" · mentor={m}"
+    s = len(skills or [])
+    # skill-Segment nur bei Treffern — ohne Skill-Hint bleibt die Zeile
+    # zeichengleich zum v7-Format (dieselbe Politik wie beim mentor-Segment).
+    return msg + (f" · skill={s}" if s else "")
 
 
 def make_output(additional_context, system_message=None):
@@ -440,7 +548,10 @@ def cleanup_state(state_dir, now, max_age_days=7):
 # (general-Fallback: breit feuern, sichtbare systemMessage-Zeile, Dedupe pro
 # Thema). v2 = Iteration 1 (imperatives Wording, machine_prompt-Skip). v1 =
 # ohne "v". Auswertungen NIE über Versionen mischen.
-TELEMETRY_SCHEMA_VERSION = 7
+# v8 (2026-07-22): fired-Events tragen skill_hint/skill_hint_count (Skill-Routing).
+# Auswertungen NICHT über den Versionsschnitt hinweg mischen — dieselbe Disziplin
+# wie beim UTF-8-Bruch v3→v4 (NOTES Befund 5).
+TELEMETRY_SCHEMA_VERSION = 8
 
 
 def log_telemetry(record, log_path):
@@ -978,11 +1089,13 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
         daemon_ok=daemon_scores is not None)
     # Unter 2 Content-Tokens ist die Vertiefungszeile Rauschen
     # (Live-Smoke 2026-07-07: memory_search_tool("weiter") auf Junk-Prompt).
+    skill_lines = build_skill_routing(domain, phase, prompt)
     ctx = compose_context(domain, phase, routing, caps,
                           query=terms if len(terms.split()) >= 2 else None,
-                          mentors=mentors)
+                          mentors=mentors, skills=skill_lines)
     # systemMessage nur beim tatsächlichen Feuern (Q1: sichtbare Zeile nur wenn feuert).
-    sys_msg = build_system_message(domain, phase, caps, caps_source, mentors) if ctx else None
+    sys_msg = build_system_message(domain, phase, caps, caps_source, mentors,
+                                   skill_lines) if ctx else None
     out = make_output(ctx, system_message=sys_msg)
 
     if out:
@@ -998,6 +1111,12 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
                        "caps_source": caps_source, "query": terms,
                        "mentor": mentors, "mentor_count": len(mentors),
                        "mentor_source": mentor_source,
+                       # v8: empfohlene Skills als Namen (nicht als Volltext-Zeilen —
+                       # die stehen im Code und würden die Telemetrie aufblähen).
+                       # eval_skill_routing.py prüft gegen die Transkripte, ob der
+                       # genannte Skill danach wirklich aufgerufen wurde.
+                       "skill_hint": skill_names(skill_lines),
+                       "skill_hint_count": len(skill_lines),
                        "rearmed": rearmed, "prompt_preview": preview,
                        "matched_keywords": dom_hits + phase_hits,
                        "session": session_id, **ab}, log_path)

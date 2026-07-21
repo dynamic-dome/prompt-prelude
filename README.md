@@ -121,10 +121,50 @@ vs. 18/20 in der In-Process-Eval). Regression wird durch einen echten
 Subprocess-E2E-Test gefangen (`TestStdinEncodingE2E`) — In-Process-stdin-Mocks
 können diese Bug-Klasse prinzipiell nicht sehen.
 
+## Skill-Routing (v8, 2026-07-22)
+Zweiter Kanal neben dem RAG-Auftrag: statt Material zu liefern, nennt er die
+**auszuführende Aktion** — mit fertigem `Skill("name")`-Aufruf und, wo es eine
+echte Verwechslung gibt, mit explizitem **NICHT** samt Begründung. Das
+Negativ-Routing ist der eigentliche Wert: es kodiert Abgrenzungen, die sonst
+nirgends stehen (z.B. dass inhaltliche Code-Reviews über Codex laufen).
+
+Warum ein eigener Kanal: Der RAG-Auftrag injiziert die Caps **fertig mit**, der
+Agent kann sie passiv konsumieren — deshalb misst `eval_compliance` dort nur
+15 % → 18 % und kann "ignoriert" nicht von "schon geliefert" trennen (Befund 7).
+Ein SKILL.md-Body lässt sich nicht vorab injizieren: der Agent ruft ihn auf oder
+nicht. Der Kanal ist damit härter **und** sauber messbar.
+
+Konfiguration in `prompt_prelude.py`:
+- `SKILL_RULES` — keyword-getriggert, domänenunabhängig, höchste Priorität
+- `SKILL_ROUTING` — pro Domain
+- `SKILL_PHASE_ROUTING` — pro Phase (aktuell nur `planning`)
+- `SKILL_HINT_MAX = 2` — Deckel, sonst kippt der Block von Wegweiser zu Wand
+
+**Scope-Regel:** geroutet wird nur, wo mehrere Skills um denselben Anlass
+konkurrieren oder eine harte CLAUDE.md-Regel einen Skill verlangt. Projekt-
+gebundene Skills (`ich-mentor`, `ich-loop`, `stackatlas-content-studio`,
+`website-check`) bleiben bewusst draußen — dort ist die Wahl eindeutig, ein
+Hinweis wäre Rauschen. Tote Skills gehören ins Archiv, nicht ins Routing.
+
+**Wirksamkeit messen:** `python eval_skill_routing.py` joint die Telemetrie mit
+den Claude-Code-Transkripten (`~/.claude/projects/**.jsonl`) und prüft, ob ein
+empfohlener Skill danach wirklich gerufen wurde — als Skill-Tool **oder** als
+getippter Slash-Command. Beide Quellen zählen; wer nur `"skill":"…"` zählt,
+hält benutzte Skills fälschlich für tot (Messfehler vom 2026-07-22).
+**Baseline vor Einführung: 37/389 = 10 %** der fired-Events zogen einen der
+routbaren Skills von selbst. Das ist die Messlatte.
+
+Ein Guard-Test (`TestNoDeadSkillReferences`) verhindert, dass das Routing
+Skills bewirbt, die es nicht mehr gibt — Anlass war `diagnose-hitl` (liegt in
+`~/.claude/skills/_archive/`) und `modern-web-design` (Plugin auf `false`), die
+beide monatelang in `DOMAIN_ROUTING` standen. **Bei Skill-Aufräumrunden hier
+mitziehen.**
+
 ## Telemetrie
 `prompt_prelude.jsonl` (gitignored, bleibt lokal): pro Prompt ein Event mit
 skip-Grund ODER `fired`-Routing. Auditierbare Felder pro Event:
-- `v` (Schema-Version, aktuell 7 = Ghost-Mentor-Partition, neue Felder
+- `v` (Schema-Version, aktuell 8 = Skill-Routing, neue Felder
+  `skill_hint`/`skill_hint_count` bei `fired`; 7 = Ghost-Mentor-Partition, Felder
   `mentor`/`mentor_count`/`mentor_source` + geänderte Injektions-Semantik;
   v6 = Threshold-Kalibrierung T-8; v5 = Caps-Gating atlas/-only + Query-Cleanup;
   v4 = stdin-UTF-8-Fix): v1-v3-Events sind Mojibake-vergiftet (cp1252-stdin),
