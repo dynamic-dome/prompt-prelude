@@ -62,6 +62,34 @@ Vertiefungszeile erst ab 2 Content-Tokens. Leere Caps sind gewollt besser
 als falsche. Codex-Scope-Creep (Sandbox-Hacks in conftest, Überfiltern von
 Content-Wörtern wie "frontend") im Review zurückgebaut.
 
+## Befund 7 (2026-07-21, T-23): v4+-Re-Messung — UTF-8-Fix vervierfachte die Compliance, aber die Metrik ist stumpf
+Re-Messung nach dem stdin-UTF-8-Fix (Befund 5), v1-v3 sauber ausgeschlossen.
+`eval_compliance.py` bekam dafür einen `--min-version`-Filter (Default v>=4;
+`--min-version 0` = alte Misch-Auswertung). Datenstand: v4-v7, 2051 Zeilen, 372 fired.
+
+**Zahlen (Fenster 900 s):**
+- **FIRED befolgt: 67/372 = 18 %** (Median-Latenz 51 s) — vs. H4-Altbefund **~4 %**
+  (1/26) auf Mojibake-v3. Der UTF-8-Fix hat die *gemessene* Compliance ~vervierfacht.
+- Gegenprobe mit allen Versionen: 85/537 = 16 % (Mojibake zieht runter).
+- Nach routing_source: keywords 21 %, fallback 16 %, **daemon nur 13 % (n=15)** —
+  Daemon-Routing wird real kaum noch gezogen.
+
+**Kernbefund (bestätigt die H4-These mit Zahlen):** Die SKIP-Baseline (Prelude feuert
+*keine* frische Zeile) liegt bei **15 %** (256/1679). Fired hebt den Atlas-Call also nur
+von 15 % → 18 % = **+3 pp**. Die Metrik kann "Hook nutzlos" nicht von "Hook so nützlich,
+dass der Agent gar nicht mehr selbst sucht" trennen — genau weil die Prelude die Caps
+*fertig injiziert*. `eval_compliance` misst Unterlassung dort, wo teils schon konsumiert wurde.
+
+**Teil (b) — Zitat-Metrik — GEBLOCKT (Owner-Entscheid nötig):** Die bessere Metrik wäre
+"zitiert der Folgeturn einen injizierten `caps`-Treffer (record_id/abs_path)?". Nicht
+messbar mit der jetzigen Instrumentierung: der **tool-usage-tracker loggt keine
+Tool-Argumente** — `memory_cite`-Events haben leeres `summary` (kein record_id), nur
+`Read` trägt einen Pfad-Fragment im `summary`. Damit ist nur ein Teil-Proxy machbar
+(Read auf einen injizierten `.md`-Pfad wie `atlas/approaches/internal/*.md`), der
+record_id-Zitat-Zweig (`atlas/project:X` via memory_cite) bleibt blind. Voll-Metrik
+braucht eine Tracker-Erweiterung (Argument-Logging: record_id + file_path) — cross-project,
+mit Privacy-Implikation. **Bewusst NICHT still halbgebaut.** Owner-Optionen im Wrap-up.
+
 ## Status (aktualisiert 2026-07-02 abend, Iteration 1)
 - Befund 1: `domain+phase`-Key + RAG-Bezug-Re-Arm umgesetzt (frühere Session).
   **Offen:** Re-Arm nach N Prompts (State-Format `set` → `{key: fired_at}`) —

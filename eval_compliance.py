@@ -28,6 +28,10 @@ HERE = Path(__file__).resolve().parent
 DEFAULT_TELEMETRY = HERE / "prompt_prelude.jsonl"
 DEFAULT_TRACKER_DATA = HERE.parent / "tool-usage-tracker" / "data"
 DEFAULT_WINDOW_S = 900.0   # 15 Min: ein Turn kann lange laufen, danach zaehlt es nicht mehr
+# stdin-UTF-8-Fix landete mit Schema v4 (Befund 5, NOTES-live-findings.md): v1-v3 sind
+# Mojibake-vergiftet (cp1252-stdin -> Keyword-Matching lief auf Muell-Text), fuer
+# Routing-/Compliance-Auswertungen NICHT mit v4+ mischen. Default schliesst sie aus.
+DEFAULT_MIN_VERSION = 4
 
 ATLAS_PREFIX = "mcp__agent-memory-atlas__"
 # Nur Read-Tools beweisen "Memory konsultiert"; memory_share ist ein Write.
@@ -64,15 +68,27 @@ def _iter_jsonl(path: Path):
         return
 
 
-def load_prelude_events(path: str | Path) -> list[dict]:
-    """Alle Telemetrie-Zeilen mit Zeit + Session (fired UND skip)."""
+def load_prelude_events(path: str | Path,
+                        min_version: int = 0) -> list[dict]:
+    """Alle Telemetrie-Zeilen mit Zeit + Session (fired UND skip).
+
+    min_version filtert das Schema-Feld `v`: Zeilen mit `v` < min_version werden
+    verworfen (Mojibake-Trennung, s. DEFAULT_MIN_VERSION). Zeilen ohne `v`
+    (v=None) stammen aus der aeltesten cp1252-Aera und gelten als < jede
+    positive Version -> bei min_version > 0 raus. min_version=0 laesst alles durch.
+    """
     rows = []
     for raw in _iter_jsonl(Path(path)):
         if not isinstance(raw, dict):
             continue
         t, session = raw.get("t"), raw.get("session")
-        if isinstance(t, (int, float)) and isinstance(session, str):
-            rows.append(raw)
+        if not (isinstance(t, (int, float)) and isinstance(session, str)):
+            continue
+        if min_version > 0:
+            v = raw.get("v")
+            if not isinstance(v, int) or v < min_version:
+                continue
+        rows.append(raw)
     rows.sort(key=lambda r: r["t"])
     return rows
 
@@ -192,10 +208,14 @@ def main(argv=None) -> int:
     ap.add_argument("--tracker-data", default=str(DEFAULT_TRACKER_DATA))
     ap.add_argument("--window", type=float, default=DEFAULT_WINDOW_S,
                     help="Match-Fenster in Sekunden (Default 900)")
+    ap.add_argument("--min-version", type=int, default=DEFAULT_MIN_VERSION,
+                    help="nur Telemetrie-Schema v>=N auswerten "
+                         f"(Default {DEFAULT_MIN_VERSION}: v1-v3 Mojibake-vergiftet; "
+                         "0 = alle Versionen)")
     ap.add_argument("--json", action="store_true", help="Summary als JSON")
     args = ap.parse_args(argv)
 
-    prelude = load_prelude_events(args.telemetry)
+    prelude = load_prelude_events(args.telemetry, min_version=args.min_version)
     calls = load_atlas_calls(args.tracker_data)
     rows = join_compliance(prelude, calls, window_s=args.window)
     summary = summarize(rows)
@@ -205,8 +225,10 @@ def main(argv=None) -> int:
         return 0
 
     f, s = summary["fired"], summary["skip"]
+    vfilter = (f"v>={args.min_version} (v1-v3 Mojibake-ausgeschlossen)"
+               if args.min_version > 0 else "alle Versionen (inkl. Mojibake v1-v3!)")
     print(f"Prelude-Zeilen: {len(rows)}  |  Atlas-Read-Calls: {len(calls)}"
-          f"  |  Fenster: {args.window:.0f} s")
+          f"  |  Fenster: {args.window:.0f} s  |  Filter: {vfilter}")
     print(f"\nFIRED  : {f['followed']}/{f['total']} befolgt"
           f" ({f['rate']:.0%})" if f["total"] else "\nFIRED  : keine Events")
     if f["median_latency_s"] is not None:

@@ -134,6 +134,30 @@ def test_skip_events_form_baseline_without_consumption(tmp_path):
     assert summary["skip"]["followed"] == 1
 
 
+def test_min_version_filters_mojibake_versions(tmp_path):
+    """Befund 5: v1-v3 (und v=None) sind cp1252-Mojibake — bei min_version=4
+    duerfen sie nicht in die Auswertung; v4+ bleibt."""
+    prelude = _write_jsonl(tmp_path / "p.jsonl", [
+        _prelude(T0, "s0"),                # ohne v -> raus bei min_version=4
+        _prelude(T0 + 1, "s3", v=3),       # v3 -> raus
+        _prelude(T0 + 2, "s4", v=4),       # v4 -> bleibt
+        _prelude(T0 + 3, "s7", v=7),       # v7 -> bleibt
+    ])
+    rows = ec.load_prelude_events(prelude, min_version=4)
+    assert {r["session"] for r in rows} == {"s4", "s7"}
+
+
+def test_min_version_zero_keeps_everything(tmp_path):
+    """min_version=0 ist die Escape-Luke: alles inkl. v=None wird geladen."""
+    prelude = _write_jsonl(tmp_path / "p.jsonl", [
+        _prelude(T0, "s0"),                # ohne v
+        _prelude(T0 + 1, "s3", v=3),
+        _prelude(T0 + 2, "s4", v=4),
+    ])
+    rows = ec.load_prelude_events(prelude, min_version=0)
+    assert len(rows) == 3
+
+
 def test_summary_groups_by_domain(tmp_path):
     prelude = _write_jsonl(tmp_path / "p.jsonl", [
         _prelude(T0, "s1", domain="debug", key="debug"),
