@@ -153,13 +153,16 @@ class TestDetectPhase:
 
 
 class TestBuildRagRouting:
-    def test_domain_only(self):
-        out = pp.build_rag_routing("ui-frontend", "quiet")
-        assert len(out) == 1 and "UI-/Design-Skills" in out[0]
+    def test_v9_no_domain_lines(self):
+        # v9 (Befund 10): die domänenspezifischen Auftragstexte sind entfallen —
+        # der imperative Text änderte das Verhalten nicht (+5 pp, Schwelle
+        # gerissen), der Wert liegt im Material.
+        assert pp.build_rag_routing("ui-frontend", "quiet") == []
+        assert pp.build_rag_routing("general", "quiet") == []
 
     def test_planning_adds_line(self):
         out = pp.build_rag_routing("workflow", "planning")
-        assert len(out) == 2 and any("Sparring" in l for l in out)
+        assert len(out) == 1 and "Sparring" in out[0]
 
     def test_nothing_relevant(self):
         assert pp.build_rag_routing(None, "quiet") == []
@@ -173,22 +176,28 @@ class TestComposeContext:
     def test_empty_when_nothing(self):
         assert pp.compose_context(None, "quiet", [], None) == ""
 
+    def test_v9_routing_lines_alone_render_nothing(self):
+        # v9-Kern: der Block ist ein Material-Kanal — Auftrags-/Planungszeilen
+        # ohne Caps/Mentoren/Skills ergeben KEINEN Block (52 % der v8-Feuerungen
+        # waren genau dieses Leer-Feuern, Befund 10).
+        assert pp.compose_context("ui-frontend", "quiet", ["tu X"], None) == ""
+
     def test_contains_routing_without_echo_by_default(self, monkeypatch):
         # Befund 5: ECHO-Zeile nur mit PRELUDE_ECHO=1, Default aus
         monkeypatch.delenv("PRELUDE_ECHO", raising=False)
-        out = pp.compose_context("ui-frontend", "quiet", ["tu X"], None)
+        out = pp.compose_context("ui-frontend", "quiet", ["tu X"], ["atlas/skill:x"])
         assert "↳ prelude" not in out and "ECHO:" not in out
-        assert "RAG-AUFTRAG" in out and "- tu X" in out
+        assert "tu X" in out and "RAG-AUFTRAG" not in out
         assert out.startswith("<prompt_prelude") and out.endswith("</prompt_prelude>")
 
     def test_echo_line_with_env_flag(self, monkeypatch):
         monkeypatch.setenv("PRELUDE_ECHO", "1")
-        out = pp.compose_context("ui-frontend", "quiet", ["tu X"], None)
+        out = pp.compose_context("ui-frontend", "quiet", ["tu X"], ["atlas/skill:x"])
         assert "↳ prelude · [quiet] [ui-frontend]" in out
 
     def test_echo_off_when_flag_not_one(self, monkeypatch):
         monkeypatch.setenv("PRELUDE_ECHO", "0")
-        out = pp.compose_context("ui-frontend", "quiet", ["tu X"], None)
+        out = pp.compose_context("ui-frontend", "quiet", ["tu X"], ["atlas/skill:x"])
         assert "↳ prelude" not in out
 
     def test_capabilities_block(self):
@@ -277,9 +286,11 @@ class TestTelemetry:
         # v4 = Iteration 3 (stdin-UTF-8-Fix): Live-Daten davor sind Mojibake-
         # vergiftet, Auswertungen NIE über die Versionsgrenze mischen.
         # v8 = Skill-Routing (2026-07-22): fired-Events tragen skill_hint/-count.
+        # v9 = Advisory-Pivot (2026-08-04): no_material-Skip, kein Leer-Feuern —
+        # fired-Raten sind mit v8 NICHT vergleichbar (anderer Nenner).
         # Dieser Test ist absichtlich hart gepinnt — er zwingt dazu, bei jedem
         # Bump zu entscheiden, ob Auswertungen den Schnitt überspringen dürfen.
-        assert ev["v"] == pp.TELEMETRY_SCHEMA_VERSION == 8
+        assert ev["v"] == pp.TELEMETRY_SCHEMA_VERSION == 9
 
 
 class TestExtractQuery:
@@ -444,8 +455,10 @@ class TestPrecisionGate:
                            .read_text(encoding="utf-8").strip().splitlines()[-1])
 
     def test_code_prompt_with_path_and_fence_emits(self, tmp_path, monkeypatch, fake_atlas_db):
+        # Prompt-Terme matchen den fake-BM25-Index (component layout) — v9
+        # feuert nur noch mit Material, der Gate-Pass allein reicht nicht mehr.
         monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
-        prompt = ("Bitte implementiere das in prompt_prelude.py:\n"
+        prompt = ("Bitte implementiere das component layout in prompt_prelude.py:\n"
                   "```python\nprint('hello')\n```")
         out = pp.run({"prompt": prompt, "session_id": "s"},
                      http_fn=_mk_http(), **self._kw(tmp_path))
@@ -480,27 +493,36 @@ class TestPrecisionGate:
             assert "task_verb" in pp.detect_work_signals(prompt), prompt
 
     def test_research_prompt_passes_gate(self, tmp_path, monkeypatch, fake_atlas_db):
+        # Material kommt via Daemon-/search (v9: ohne Material kein Emit).
         monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
+        fn = _mk_http(classify=_scores(("research", 0.62), ("code-impl", 0.20)),
+                      search={"results": [{"record_id": "atlas/skill:deep-research",
+                                           "heading": "Deep Research"}]})
         out = pp.run({"prompt": "recherchiere die besten embedding-modelle für deutsche texte",
                       "session_id": "s"},
-                     http_fn=_mk_http(), **self._kw(tmp_path))
+                     http_fn=fn, **self._kw(tmp_path))
         assert out != ""
         decision = self._last_decision(tmp_path)
         assert decision["decision"] == "emit"
         assert "task_verb" in decision["work_signals"]
 
-    def test_budget_strategy_meta_question_without_work_signal_skips(self, tmp_path, monkeypatch):
+    def test_budget_strategy_meta_question_skips_via_material_gate(self, tmp_path, monkeypatch):
+        # v9-Verschiebung: "planen" zählt jetzt als planning-Work-Signal
+        # (Befund 9/10), der Prompt passiert also das Work-Signal-Gate.
+        # Der Schutz gegen diese Meta-Frage liegt jetzt im Material-Gate:
+        # keine Caps/Mentoren/Skills -> no_material, kein injizierter Kontext.
         monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)
         prompt = ("Wie würdest du strategisch mein Token-Budget für Analyse und "
                   "Visualisierung planen, damit wir nicht pro Prompt 100 Tokens verschwenden?")
         out = pp.run({"prompt": prompt, "session_id": "s"},
                      http_fn=_mk_http(), **self._kw(tmp_path))
         obj = _json.loads(out)
-        assert obj["systemMessage"].startswith("prelude ▸ skip · no_work_signal")
+        assert obj["systemMessage"].startswith("prelude ▸ skip · no_material")
         assert "hookSpecificOutput" not in obj   # T-31: Skip-Zeile injiziert NIE Kontext
         decision = self._last_decision(tmp_path)
         assert decision["decision"] == "skip"
-        assert decision["reason"] == "no_work_signal"
+        assert decision["reason"] == "no_material"
+        assert "planning" in decision["work_signals"]
 
     def test_short_confirmation_skips(self, tmp_path):
         out = pp.run({"prompt": "ja mach", "session_id": "s"}, **self._kw(tmp_path))
@@ -520,18 +542,20 @@ class TestPrecisionGate:
         assert "file_path" in decision["work_signals"]
 
     def test_documented_budget_strategy_false_positive_is_skipped(self, tmp_path, monkeypatch):
+        # v9: der dokumentierte False-Positive wird weiterhin gefangen, aber
+        # vom Material-Gate statt vom Work-Signal-Gate (planning zählt jetzt).
         monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)
         prompt = ("Lohnt sich die Budget-Strategie für diese Session, oder sollten wir "
                   "lieber anders planen, ohne direkt Daten-Viz-Skills zu ziehen?")
         out = pp.run({"prompt": prompt, "session_id": "s"},
                      http_fn=_mk_http(), **self._kw(tmp_path))
         obj = _json.loads(out)
-        assert obj["systemMessage"].startswith("prelude ▸ skip · no_work_signal")
+        assert obj["systemMessage"].startswith("prelude ▸ skip · no_material")
         assert "hookSpecificOutput" not in obj
         decision = self._last_decision(tmp_path)
         assert decision["decision"] == "skip"
         assert decision["classification"]["phase"] == "planning"
-        assert decision["reason"] == "no_work_signal"
+        assert decision["reason"] == "no_material"
 
 class TestCleanupState:
     def test_removes_old_keeps_fresh(self, tmp_path):
@@ -579,13 +603,14 @@ class TestMain:
         assert ev["prompt_preview"] == "x"
 
     def test_fire_prints_json_with_system_message(self, monkeypatch, tmp_path, capsys):
-        # v3: der echte main()-stdin-Pfad muss beim Feuern gültiges JSON mit der
-        # sichtbaren systemMessage drucken (Daemon down via conftest -> general-Fallback).
+        # Der echte main()-stdin-Pfad muss beim Feuern gültiges JSON mit der
+        # sichtbaren systemMessage drucken. v9: Feuern braucht Material — der
+        # Debug-Prompt zieht den Skill-Hint (Daemon down via conftest, kein Atlas).
         import io, sys
         self._isolate(monkeypatch, tmp_path)
         monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)  # hermetisch
         monkeypatch.setattr(sys, "stdin", io.StringIO(
-            _json.dumps({"prompt": "erstelle bitte eine kurze notiz über das wetter morgen früh",
+            _json.dumps({"prompt": "debugge bitte den fehler beim einlesen der notiz-datei",
                          "session_id": "m"})))
         assert pp.main() == 0
         obj = _json.loads(capsys.readouterr().out.strip())
@@ -754,12 +779,15 @@ class TestRunSemanticRouting:
         return _json.loads((tmp_path / "l").read_text(encoding="utf-8").strip().splitlines()[-1])
 
     def test_daemon_routes_prompt_without_keywords(self, tmp_path):
+        # v9: Feuern braucht Material -> /search liefert einen atlas/-Treffer.
         fn = _mk_http(classify=_scores(("ui-frontend", 0.62), ("debug", 0.20)),
-                      search={"results": []})
+                      search={"results": [{"record_id": "atlas/skill:frontend-design",
+                                           "heading": "Frontend Design"}]})
         out = pp.run({"prompt": NO_KEYWORD_PROMPT, "session_id": "s"},
                      http_fn=fn, **self._kw(tmp_path))
         assert "ui-frontend" in out
         ev = self._last_event(tmp_path)
+        assert ev["fired"] is True
         assert ev["routing_source"] == "daemon"
         assert ev["keyword_domain"] is None
         assert ev["daemon_top"][0] == {"name": "ui-frontend", "score": 0.62}
@@ -794,16 +822,17 @@ class TestRunSemanticRouting:
         assert ev["routing_source"] == "keywords"
         assert ev["daemon_top"][0]["name"] == "research"
 
-    def test_fallback_fire_carries_ab_fields(self, tmp_path, monkeypatch):
-        # v3: weder Daemon (down) noch Keywords -> general-Fallback FEUERT jetzt,
-        # A/B-Felder bleiben am fired-Event erhalten (routing_source=fallback).
+    def test_fallback_without_material_skips_with_ab_fields(self, tmp_path, monkeypatch):
+        # v9: der v3-general-Fallback feuert NICHT mehr leer (52 % der
+        # v8-Feuerungen, Befund 10) — er läuft ins Material-Gate. Die
+        # A/B-Felder bleiben am Skip-Event erhalten (routing_source=fallback).
         monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)  # hermetisch, keine caps
         pp.run({"prompt": "erstelle bitte eine kurze notiz über das wetter morgen früh", "session_id": "s"},
                http_fn=_mk_http(), **self._kw(tmp_path))
         ev = self._last_event(tmp_path)
-        assert ev["fired"] is True
-        assert ev["domain"] == "general"
+        assert ev["skip"] == "no_material"
         assert ev["routing_source"] == "fallback"
+        assert ev["caps_source"] == "none" and ev["mentor_source"] == "none"
         assert ev["keyword_domain"] is None and ev["daemon_top"] == []
 
     def test_fired_telemetry_has_all_new_fields(self, tmp_path):
@@ -876,6 +905,8 @@ class TestRunSemanticRouting:
                      budget=pp.DaemonBudget(budget_s=0.001), **self._kw(tmp_path))
         assert [u for u in calls if u.endswith("/classify")]      # classify lief noch
         assert not [u for u in calls if u.endswith("/search")]    # search geskippt
+        # v9: die Prompt-Terme matchen den fake-Index nicht -> kein Material,
+        # der Lauf endet als no_material-Skip; caps_source bleibt am Event.
         assert self._last_event(tmp_path)["caps_source"] in ("sqlite", "none")
         assert "ui-frontend" in out
 
@@ -889,7 +920,9 @@ class TestV5CapsGating:
     def _last_event(self, tmp_path):
         return _json.loads((tmp_path / "l").read_text(encoding="utf-8").strip().splitlines()[-1])
 
-    def test_daemon_non_atlas_results_are_omitted(self, tmp_path):
+    def test_daemon_non_atlas_results_skip_no_material(self, tmp_path):
+        # v5 filterte non-atlas-Treffer weg und feuerte trotzdem ("leer besser
+        # als falsch"); v9 zieht die Konsequenz: ganz ohne Material kein Feuer.
         fn = _mk_http(classify=_scores(("ui-frontend", 0.62)),
                       search={"results": [
                           {"record_id": "haupt-wiki/notes/gamma-ray", "heading": "Gamma Ray Telescope"},
@@ -897,10 +930,11 @@ class TestV5CapsGating:
                       ]})
         out = pp.run({"prompt": NO_KEYWORD_PROMPT, "session_id": "s"},
                      http_fn=fn, **self._kw(tmp_path))
-        ctx = _json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        obj = _json.loads(out)
+        assert "hookSpecificOutput" not in obj
+        assert obj["systemMessage"].startswith("prelude ▸ skip · no_material")
         ev = self._last_event(tmp_path)
-        assert "VORAB-SUCHE" not in ctx
-        assert ev["caps"] == []
+        assert ev["skip"] == "no_material"
         assert ev["caps_source"] == "none"
         assert ev["caps_raw_count"] == 2
 
@@ -959,13 +993,17 @@ class TestV5CapsGating:
     def test_thin_query_suppresses_vertiefung_line(self, tmp_path, monkeypatch):
         # Live-Smoke 2026-07-07: Junk-Prompt ließ nur EIN Token übrig ->
         # memory_search_tool("weiter") ist Rauschen. Unter 2 Content-Tokens
-        # entfällt die Vertiefungszeile (der RAG-Auftrag selbst bleibt).
+        # entfällt die Vertiefungszeile (v9: Caps kommen hier via Daemon,
+        # sonst würde der Lauf schon am Material-Gate enden).
         monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)
+        fn = _mk_http(classify=_scores(("ui-frontend", 0.62)),
+                      search={"results": [{"record_id": "atlas/skill:frontend-design",
+                                           "heading": "Frontend Design"}]})
         out = pp.run({"prompt": "starte jetzt bitte einfach gerne okay super",
-                      "session_id": "s"}, http_fn=_mk_http(), **self._kw(tmp_path))
+                      "session_id": "s"}, http_fn=fn, **self._kw(tmp_path))
         ctx = _json.loads(out)["hookSpecificOutput"]["additionalContext"]
         assert "memory_search_tool(" not in ctx
-        assert "RAG-AUFTRAG" in ctx
+        assert "VORAB-SUCHE Capability-RAG" in ctx
 
     def test_extract_query_keeps_domainlike_content_words(self):
         # "frontend"/"workflow" als CONTENT sind hochsignifikante Suchbegriffe —
@@ -1014,10 +1052,15 @@ class TestV3GeneralFallback:
     def _last_event(self, tmp_path):
         return _json.loads((tmp_path / "l").read_text(encoding="utf-8").strip().splitlines()[-1])
 
-    def test_substantive_prompt_without_domain_fires_general(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)  # hermetisch
+    def test_general_with_material_fires(self, tmp_path, monkeypatch):
+        # v9: der general-Fallback existiert weiter, feuert aber nur noch mit
+        # Material (hier: Daemon-/search-Treffer; classify unter Threshold).
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)
+        fn = _mk_http(classify=_scores(("research", 0.20)),
+                      search={"results": [{"record_id": "atlas/skill:notizen",
+                                           "heading": "Notiz Skill"}]})
         out = pp.run({"prompt": "erstelle bitte eine kurze notiz über das wetter morgen früh", "session_id": "s"},
-                     http_fn=_mk_http(), **self._kw(tmp_path))
+                     http_fn=fn, **self._kw(tmp_path))
         assert out != ""
         ctx = _json.loads(out)["hookSpecificOutput"]["additionalContext"]
         assert 'domain="general"' in ctx
@@ -1029,10 +1072,14 @@ class TestV3GeneralFallback:
         ctx = _json.loads(out)["hookSpecificOutput"]["additionalContext"]
         assert 'domain="ui-frontend"' in ctx
 
-    def test_general_routing_line_present(self, tmp_path, monkeypatch):
+    def test_general_fire_carries_vertiefung_line(self, tmp_path, monkeypatch):
+        # v9: die Vertiefungszeile hängt am Caps-Block (>=2 Content-Tokens).
         monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)
+        fn = _mk_http(classify=_scores(("research", 0.20)),
+                      search={"results": [{"record_id": "atlas/skill:notizen",
+                                           "heading": "Notiz Skill"}]})
         out = pp.run({"prompt": "erstelle bitte eine kurze notiz über das wetter morgen früh", "session_id": "s"},
-                     http_fn=_mk_http(), **self._kw(tmp_path))
+                     http_fn=fn, **self._kw(tmp_path))
         ctx = _json.loads(out)["hookSpecificOutput"]["additionalContext"]
         assert "memory_search_tool" in ctx
 
@@ -1043,9 +1090,9 @@ class TestV3GeneralFallback:
         p = "<task-notification>\n<task-id>x</task-id>\n</task-notification>"
         assert pp.run({"prompt": p, "session_id": "s"}, **self._kw(tmp_path)) == ""
 
-    def test_build_rag_routing_general(self):
-        lines = pp.build_rag_routing("general", "quiet")
-        assert lines and "memory_search_tool" in lines[0]
+    def test_build_rag_routing_general_empty_v9(self):
+        # v9: kein Auftragstext mehr für general — der Wert liegt im Material.
+        assert pp.build_rag_routing("general", "quiet") == []
 
 
 class TestV3SystemMessage:
@@ -1369,16 +1416,19 @@ class TestV7GhostMentorRun:
         assert ev["mentor_count"] == 1
         assert ev["mentor_source"] == "daemon"
 
-    def test_no_overlap_no_mentor_block(self, tmp_path):
+    def test_no_overlap_no_mentor_and_no_material_skip(self, tmp_path):
+        # Das Token-Overlap-Gate verwirft den themenfremden wiki-Treffer;
+        # v9: damit bleibt GAR kein Material -> no_material-Skip statt
+        # Leer-Feuern (vorher: fired mit mentor=[]).
         results = [{"record_id": "haupt-wiki/queries/2026-03-03-session-datenbank",
                     "heading": "Alembic Migration", "snippet": "postgres upgrade"}]
         fn = _mk_http(classify=_scores(("ui-frontend", 0.62)), search={"results": results})
         out = pp.run({"prompt": NO_KEYWORD_PROMPT, "session_id": "s"},
                      http_fn=fn, **self._kw(tmp_path))
-        ctx = _json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        obj = _json.loads(out)
+        assert "hookSpecificOutput" not in obj
         ev = self._last_event(tmp_path)
-        assert "Frühere Fälle" not in ctx
-        assert ev["mentor"] == [] and ev["mentor_count"] == 0
+        assert ev["skip"] == "no_material"
         assert ev["mentor_source"] == "none"
 
     def test_sqlite_fallback_mentor_source(self, tmp_path, monkeypatch):
@@ -1437,3 +1487,82 @@ class TestGoalAnchor:
                state_dir=str(tmp_path), log_path=str(tmp_path / "t.jsonl"),
                now=1000.0, http_fn=lambda *a, **k: None)
         assert not os.path.exists(pp.anchor_path("skip-sess", str(tmp_path)))
+
+
+# ===========================================================================
+# v9 (Advisory-Pivot, 2026-08-04, NOTES Befund 10): Material-Kanal.
+# Kein Material (Caps/Mentoren/Skill-Hint) -> Skip "no_material" statt
+# Leer-Feuern; planning zählt als Work-Signal (Befund 9: 59 fälschlich
+# geskippte Planungs-Prompts, darunter der Inventur-Prompt selbst).
+# ===========================================================================
+
+class TestV9MaterialGate:
+    def _kw(self, tmp_path):
+        return dict(atlas_root="x", state_dir=str(tmp_path / "st"),
+                    log_path=str(tmp_path / "l"),
+                    decision_log_path=str(tmp_path / "d.jsonl"), now=1.0)
+
+    def _last_event(self, tmp_path):
+        return _json.loads((tmp_path / "l").read_text(encoding="utf-8").strip().splitlines()[-1])
+
+    def _last_decision(self, tmp_path):
+        return _json.loads((tmp_path / "d.jsonl").read_text(encoding="utf-8").strip().splitlines()[-1])
+
+    PLANNING_PROMPT = ("ich überlege ein konzept für die neue oberfläche, "
+                       "welche ansätze wären da sinnvoll insgesamt")
+
+    def test_planning_prompt_without_task_verb_passes_gate(self, tmp_path):
+        # Befund 9/10: reiner Überlegungs-Prompt (kein task_verb/file/code) —
+        # in v6-v8 ein no_work_signal-Skip, jetzt Gate-Pass via planning-Signal.
+        fn = _mk_http(classify=_scores(("ui-frontend", 0.62)),
+                      search={"results": [{"record_id": "atlas/skill:frontend-design",
+                                           "heading": "Frontend Design"}]})
+        out = pp.run({"prompt": self.PLANNING_PROMPT, "session_id": "s"},
+                     http_fn=fn, **self._kw(tmp_path))
+        ev = self._last_event(tmp_path)
+        assert ev["fired"] is True
+        assert ev["phase"] == "planning"
+        decision = self._last_decision(tmp_path)
+        assert decision["decision"] == "emit"
+        assert "planning" in decision["work_signals"]
+        # Planungs-Zeile fährt huckepack mit dem Material
+        ctx = _json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        assert "Sparring-Modus" in ctx
+
+    def test_planning_prompt_without_material_skips(self, tmp_path, monkeypatch):
+        # Das planning-Signal öffnet nur das Work-Signal-Gate — ohne Material
+        # bleibt es beim no_material-Skip (kein Rückfall ins v8-Leer-Feuern).
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)
+        out = pp.run({"prompt": self.PLANNING_PROMPT, "session_id": "s"},
+                     http_fn=_mk_http(), **self._kw(tmp_path))
+        obj = _json.loads(out)
+        assert obj["systemMessage"].startswith("prelude ▸ skip · no_material")
+        assert "hookSpecificOutput" not in obj
+
+    def test_no_material_skip_does_not_consume_dedupe(self, tmp_path, monkeypatch):
+        # Ein no_material-Skip darf den domain+phase-Key NICHT verbrennen:
+        # der nächste themengleiche Prompt MIT Treffern muss feuern können.
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)
+        kw = self._kw(tmp_path)
+        pp.run({"prompt": "baue ein responsive component layout für den header",
+                "session_id": "dd"}, http_fn=_mk_http(), **kw)
+        assert self._last_event(tmp_path)["skip"] == "no_material"
+        fn = _mk_http(classify=_scores(("ui-frontend", 0.62)),
+                      search={"results": [{"record_id": "atlas/skill:frontend-design",
+                                           "heading": "Frontend Design"}]})
+        pp.run({"prompt": "baue ein responsive component layout für den header",
+                "session_id": "dd"}, http_fn=fn, **kw)
+        ev = self._last_event(tmp_path)
+        assert ev["fired"] is True
+
+    def test_no_material_event_carries_diagnosis_fields(self, tmp_path, monkeypatch):
+        # Auswertbarkeit: das Skip-Event muss "nichts gefunden" von "Quelle
+        # down" unterscheiden können (caps_source/mentor_source/query).
+        monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)
+        pp.run({"prompt": "erstelle bitte eine kurze notiz über das wetter morgen früh",
+                "session_id": "s"}, http_fn=_mk_http(), **self._kw(tmp_path))
+        ev = self._last_event(tmp_path)
+        assert ev["skip"] == "no_material"
+        for field in ("caps_source", "mentor_source", "query", "caps_raw_count",
+                      "routing_source"):
+            assert field in ev, field

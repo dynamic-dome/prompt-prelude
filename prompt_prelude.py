@@ -179,39 +179,25 @@ def detect_phase(prompt):
     return match_phase(prompt)[0]
 
 
-DOMAIN_ROUTING = {
-    # Skill-Namen in diesen Zeilen MÜSSEN installiert sein — sonst wirbt der Hook
-    # für Totes. Stand 2026-07-22 bereinigt: "modern-web-design" entfernt (Plugin
-    # steht in enabledPlugins auf false), "diagnose-hitl" entfernt (liegt in
-    # ~/.claude/skills/_archive/). Bei Skill-Aufräumrunden hier mit nachziehen.
-    "ui-frontend":   "Durchsuche das Capability-RAG (memory_search) nach UI-/Design-Skills "
-                     "(z.B. frontend-design, web-design-guidelines), bevor du einen Ansatz festlegst.",
-    "data-analysis": "Prüfe das Capability-RAG nach Daten-Viz-Skills (z.B. d3js-visualization) "
-                     "und passenden Auswertungs-Patterns.",
-    "workflow":      "Prüfe das Capability-RAG nach Orchestrierungs-/Workflow-Skills und Multi-Agent-Patterns.",
-    "debug":         "Starte mit superpowers:systematic-debugging und reproduziere den Fehler, bevor du fixt.",
-    "research":      "Prüfe die NotebookLM-Registry und deep-research, bevor du aus dem Gedächtnis antwortest.",
-    "code-impl":     "Durchsuche das Capability-RAG (memory_search) nach passenden Skills/Patterns, bevor du implementierst.",
-    # Iteration 2 (v3): breiter Fallback. Der Compliance-Eval (2026-07-03) zeigte,
-    # dass der Advisory-Kanal als ANWEISUNG ~3% wirkt — der Wert liegt in der
-    # Vorab-Injektion der Caps. Darum feuert jetzt JEDER substantielle Prompt
-    # ohne Spezial-Domain als 'general' und zieht dieselbe Caps-Vorabsuche.
-    "general":       "Prüfe das Capability-RAG (memory_search_tool) nach passenden Skills/Fähigkeiten "
-                     "oder Stack-Wissen, bevor du antwortest — die Vorab-Treffer unten sind schon gesucht.",
-}
+# v9 (Advisory-Pivot, 2026-08-04): Die domänenspezifischen RAG-Auftragstexte
+# (DOMAIN_ROUTING) sind entfernt. Die v8-Messung (NOTES Befund 10) zeigte, dass
+# der imperative Auftragstext das Verhalten nicht ändert (+5 pp, Falsifikations-
+# schwelle gerissen) — der Wert liegt im injizierten MATERIAL (Caps/Mentoren).
+# 52 % der v8-Feuerungen hatten caps_count=0 und trugen nur generischen Text:
+# genau dieses Leer-Feuern entfällt jetzt (Skip "no_material" in run()).
+# Die Planungs-Zeile bleibt: sie aktiviert Owner-Politik (SE-Wissensbasis §13,
+# Sparring §19), deren Handlungsmoment der Prompt-Zeitpunkt IST — sie feuert
+# aber nur huckepack, wenn ohnehin Material oder ein Skill-Hint vorliegt.
 
 PLANNING_ROUTING = ("Planungsphase: Konsultiere die SE-Wissensbasis (§13) und arbeite im "
                     "Sparring-Modus (§19) — benenne aktiv Schwächen und schlage eine Definition-of-Done vor.")
 
 
 def build_rag_routing(domain, phase):
-    """M2-Instruktions-Zeilen je Domain + optional Planungs-Zeile."""
-    lines = []
-    if domain in DOMAIN_ROUTING:
-        lines.append(DOMAIN_ROUTING[domain])
+    """v9: nur noch die Planungs-Zeile; Domain-Auftragstexte sind entfallen."""
     if phase == "planning":
-        lines.append(PLANNING_ROUTING)
-    return lines
+        return [PLANNING_ROUTING]
+    return []
 
 
 # --------------------------------------------------------------- Skill-Routing
@@ -237,30 +223,29 @@ def build_rag_routing(domain, phase):
 # Das Negativ-Routing ist der eigentliche Wert: es kodiert Abgrenzungen, die
 # sonst nirgends stehen (z.B. dass inhaltliche Code-Reviews über Codex laufen).
 
+# v9 (NOTES Befund 10): Es bleiben NUR die Skills, deren Handlungsmoment der
+# Prompt-Zeitpunkt ist — subagent-briefing (12 % Follow) und
+# superpowers:systematic-debugging (12 %), die einzigen über Baseline (6 %).
+# Entfernt, weil ihr Moment SPÄTER liegt und die Follow-Rate 0-2 % war:
+#   verify-subagent-tallies (0/50) -> Phase 2: PostToolUse auf Subagent-Reports
+#   sqlite-schema-guard (1/12)     -> Phase 2: PreToolUse auf pytest-Kommandos
+#   review (1/55)                  -> Phase 2: Stop-Hook-Kandidat, zurückgestellt
+#   office-hours / plan-ceo-review / brainstorming (0-8 %) -> ersatzlos raus
+# Details + Abschalt-Kriterien: docs/2026-08-04-vorgehen-advisory-pivot.md.
 SKILL_ROUTING = {
     "debug":    'Skill("superpowers:systematic-debugging") VOR dem ersten Fix-Versuch — '
                 'erst einen reproduzierbaren Feedback-Loop bauen, dann Hypothesen testen.',
-    "workflow": 'Subagenten im Spiel: Skill("subagent-briefing") für den Auftrag, und '
-                'Skill("verify-subagent-tallies"), sobald ein Subagent eigene Zahlen meldet '
-                '(Wortzahlen, Test-Tallies, Verdikt-Summen) — Selbstauskunft nie ungeprüft übernehmen.',
+    "workflow": 'Subagenten im Spiel: Skill("subagent-briefing") für den Auftrag — '
+                'Tool, Scope und Erfolgskriterium explizit in den Brief.',
 }
 
-SKILL_PHASE_ROUTING = {
-    "planning": 'Planungs-Skills auseinanderhalten: Skill("office-hours") wenn noch offen ist, OB '
-                'gebaut wird · Skill("superpowers:brainstorming") für Anforderungen und Design · '
-                'Skill("plan-ceo-review") erst, wenn ein FERTIGER Plan gechallenged werden soll.',
-}
+# v9: leer — die Planungs-Skill-Zeile (office-hours/brainstorming/plan-ceo-review)
+# hatte 0-8 % Follow. Struktur bleibt für eval_skill_routing.py erhalten.
+SKILL_PHASE_ROUTING = {}
 
-# (keywords, zeile) — Wortgrenzen-Matching über _kw_regex, "*" = Präfix-Stem.
-# Diese Regeln laufen domänen-unabhängig und haben Vorrang vor SKILL_ROUTING.
-SKILL_RULES = (
-    (["pytest", "conftest*", "sqlite", "test-db", "testdatenbank"],
-     'Skill("sqlite-schema-guard") VOR dem ersten pytest-Lauf — Test-DB-Isolation statisch '
-     'beweisen. Globale Regel: niemals Tests gegen Produktions-DBs.'),
-    (["review*", "code-review", "durchsehen", "gegenlesen"],
-     'Code-Review: Skill("review") für den Zwei-Achsen-Diff (Standards + Spec) gegen einen '
-     'fixen Punkt. NICHT code-reviewer — inhaltliche Reviews laufen hier über Codex.'),
-)
+# v9: leer — beide v8-Regeln (sqlite-schema-guard, review) ziehen in Phase 2 an
+# ihre Handlungsmomente um. Struktur bleibt für eval_skill_routing.py erhalten.
+SKILL_RULES = ()
 
 # Deckel: der Prelude-Block trägt schon RAG-Auftrag + Caps + Mentoren. Mehr als
 # zwei Skill-Zeilen kippen ihn von "Wegweiser" nach "Wand" (H1-Wording-Politik).
@@ -309,14 +294,16 @@ def compose_context(domain, phase, routing_lines, capabilities=None, query=None,
                     mentors=None, skills=None):
     """Baut den <prompt_prelude>-Block. Leer-String, wenn nichts Relevantes.
 
-    Wording-Politik (H1, Iteration 1): keine Selbst-Entwertung ("kein Befehl",
-    "optional") — der Funnel deckelt die Frequenz bereits, die Sprache darf
-    imperativ sein. Caps sind ein VORGEZOGENES Suchergebnis (lesen statt selbst
-    suchen); `query` liefert den fertigen memory_search_tool-Einstieg zum Vertiefen.
+    v9 (Advisory-Pivot): der Block ist ein MATERIAL-Kanal. Ohne konkreten
+    Inhalt (Caps, Mentoren oder Skill-Hint) gibt es keinen Block — die
+    routing_lines (Planungs-Zeile) allein tragen nicht mehr (52 % der
+    v8-Feuerungen waren caps_count=0 mit nur generischem Text, Befund 10).
+    Caps sind ein VORGEZOGENES Suchergebnis (lesen statt selbst suchen);
+    `query` liefert den fertigen memory_search_tool-Einstieg zum Vertiefen.
 
     Die ECHO-Zeile (erzwungene erste Antwortzeile) war Rollout-Verifikation und
     ist nur noch mit Env PRELUDE_ECHO=1 aktiv (Default: aus)."""
-    if not routing_lines and not capabilities and not mentors and not skills:
+    if not capabilities and not mentors and not skills:
         return ""
     dom = domain or "-"
     parts = []
@@ -325,26 +312,29 @@ def compose_context(domain, phase, routing_lines, capabilities=None, query=None,
                      f"↳ prelude · [{phase}] [{dom}] · RAG-Auftrag aktiv")
         parts.append("")
     if skills:
-        # Bewusst VOR dem RAG-Auftrag: das hier ist die auszuführende Aktion,
-        # der RAG-Auftrag ist Hintergrundmaterial. Der Block soll nicht hinter
-        # zwei Trefferlisten verschwinden.
+        # Bewusst zuerst: das hier ist die auszuführende Aktion, das Material
+        # darunter ist Hintergrund. Der Block soll nicht hinter Trefferlisten
+        # verschwinden.
         parts.append("SKILL-ROUTING (für diesen Prompt einschlägig):")
         parts.extend(f"- {s}" for s in skills)
         parts.append("")
     if routing_lines:
-        parts.append("RAG-AUFTRAG (vor dem ersten Arbeitsschritt erledigen):")
-        parts.extend(f"- {l}" for l in routing_lines)
+        parts.extend(routing_lines)
+        parts.append("")
+    if capabilities:
+        parts.append("VORAB-SUCHE Capability-RAG (bereits ausgeführt — prüfe diese Treffer, "
+                     "bevor du selbst suchst):")
+        parts.extend(f"- [{c}]" for c in capabilities)
         if query:
             parts.append(f'- Vertiefung bei Bedarf: memory_search_tool("{query}")')
-    if capabilities:
-        parts.append("")
-        parts.append("VORAB-SUCHE Capability-RAG (bereits ausgeführt — prüfe diese Treffer zuerst):")
-        parts.extend(f"- [{c}]" for c in capabilities)
     if mentors:
-        parts.append("")
+        if capabilities:
+            parts.append("")
         parts.append("VORAB-SUCHE Frühere Fälle (bereits ausgeführt — ähnliche gelöste "
                      "Aufgaben/Session-Notes, bei Bedarf nachlesen):")
         parts.extend(f"- [{m}]" for m in mentors)
+    while parts and parts[-1] == "":
+        parts.pop()
     body = "\n".join(parts)
     return f'<prompt_prelude phase="{phase}" domain="{dom}">\n{body}\n</prompt_prelude>'
 
@@ -551,7 +541,11 @@ def cleanup_state(state_dir, now, max_age_days=7):
 # v8 (2026-07-22): fired-Events tragen skill_hint/skill_hint_count (Skill-Routing).
 # Auswertungen NICHT über den Versionsschnitt hinweg mischen — dieselbe Disziplin
 # wie beim UTF-8-Bruch v3→v4 (NOTES Befund 5).
-TELEMETRY_SCHEMA_VERSION = 8
+# v9 = Advisory-Pivot (Material-Kanal): DOMAIN_ROUTING entfernt, Skip
+# "no_material" statt Leer-Feuern, planning zählt als Work-Signal,
+# Skill-Routing auf 2 Prompt-Zeitpunkt-Skills reduziert. Auswertungen nie
+# über Versionsgrenzen mischen (NOTES Befund 5/7/10).
+TELEMETRY_SCHEMA_VERSION = 9
 
 
 def log_telemetry(record, log_path):
@@ -719,7 +713,7 @@ DOMAIN_DESCRIPTIONS = {
 
 # Null-Anker gegen High-Score-False-Positives (Zero-Shot-Trick): diese Labels
 # werden mitklassifiziert, sind aber keine Domains — gewinnt einer, lehnt
-# pick_daemon_domain automatisch ab (Name nicht in DOMAIN_ROUTING) und der
+# pick_daemon_domain automatisch ab (Name nicht in DOMAIN_DESCRIPTIONS) und der
 # Keyword-Fallback übernimmt. Kalibrier-Befund 2026-07-02: die Meta-Frage
 # "welche projekte liegen in meinem AI ordner" traf workflow mit 0.547 —
 # über jedem sinnvollen Threshold, nur ein Null-Anker fängt so etwas.
@@ -810,7 +804,10 @@ def pick_daemon_domain(scores):
         if not scores:
             return None
         top = scores[0]
-        if top["name"] not in DOMAIN_ROUTING or top["score"] < TH_ACCEPT:
+        # v9: Referenzmenge ist DOMAIN_DESCRIPTIONS (die Labels, die /classify
+        # überhaupt kennt) — vorher DOMAIN_ROUTING, das im Advisory-Pivot
+        # entfiel. "general" war nie Daemon-Label, die Menge ist deckungsgleich.
+        if top["name"] not in DOMAIN_DESCRIPTIONS or top["score"] < TH_ACCEPT:
             return None
         # Anker-Veto: liegt ein Null-Anker nahe am Sieger, ist der Prompt
         # meta-verdaechtig -> ablehnen (strenger als TH_MARGIN, Kalibrier-Befund:
@@ -1025,7 +1022,14 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
     # Phase-Erkennung bleibt bewusst Keyword-basiert (nicht Daemon).
     phase, phase_hits = match_phase(prompt)
     routing = build_rag_routing(domain, phase)
-    confidence = domain_confidence(domain, routing_source, daemon_scores, dom_hits, work_signals)
+    # v9 (Befund 9/10): planning zählt als eigenes Work-Signal — 59 als planning
+    # klassifizierte Prompts liefen in v6-v8 als no_work_signal-Skip, genau der
+    # Prompt-Typ, für den der Material-Kanal gedacht ist. Bewusst NUR hier am
+    # Gate, nicht in should_skip: Kurz-Zurufe ("gute idee") bleiben too_short.
+    gate_signals = list(work_signals)
+    if phase == "planning":
+        gate_signals.append("planning")
+    confidence = domain_confidence(domain, routing_source, daemon_scores, dom_hits, gate_signals)
     classification = {
         "domain": domain,
         "phase": phase,
@@ -1037,13 +1041,13 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
         "matched_keywords": dom_hits + phase_hits,
     }
 
-    if not work_signals:
+    if not gate_signals:
         log_telemetry({"t": now, "skip": "no_work_signal", "session": session_id,
                        "prompt_preview": preview, **ab}, log_path)
         log_decision(decision_record("skip", "no_work_signal", now=now,
                                      session_id=session_id, prompt_preview=preview,
                                      classification=classification,
-                                     work_signals=work_signals), decision_log_path)
+                                     work_signals=gate_signals), decision_log_path)
         return make_skip_status("no_work_signal", domain, phase)
 
     if confidence < PRECISION_CONFIDENCE_THRESHOLD:
@@ -1052,20 +1056,15 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
         log_decision(decision_record("skip", "low_domain_confidence", now=now,
                                      session_id=session_id, prompt_preview=preview,
                                      classification=classification,
-                                     work_signals=work_signals), decision_log_path)
+                                     work_signals=gate_signals), decision_log_path)
         return make_skip_status("low_domain_confidence", domain, phase)
 
-    # T-12 Goal-Anchor: jeder Prompt, der das Präzisions-Gate passiert, re-anchort
-    # den Trajektor (Anchor-Politik: letzter Arbeits-Prompt; Kurz-Zurufe skippen oben).
+    # T-12 Goal-Anchor: bleibt trotz Trajektor-Archivierung (Befund 11) —
+    # billiger State-Write mit 7-Tage-Cleanup, hält eine Wiederbelebung offen.
     save_anchor(session_id, state_dir, build_anchor(prompt, domain, phase, now))
 
-    if not routing:
-        log_telemetry({"t": now, "skip": "no_routing", "session": session_id,
-                       "prompt_preview": preview, **ab}, log_path)
-        log_decision(decision_record("skip", "no_routing", now=now, session_id=session_id,
-                                     prompt_preview=preview, classification=classification,
-                                     work_signals=work_signals), decision_log_path)
-        return make_skip_status("no_routing", domain, phase)
+    # v9: der frühere no_routing-Skip entfällt — ob gefeuert wird, entscheidet
+    # jetzt allein das Material (Skip "no_material" unten).
 
     cleanup_state(state_dir, now)
 
@@ -1080,16 +1079,35 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
                            "prompt_preview": preview, **ab}, log_path)
             log_decision(decision_record("skip", "deduped", now=now, session_id=session_id,
                                          prompt_preview=preview, classification=classification,
-                                         work_signals=work_signals), decision_log_path)
+                                         work_signals=gate_signals), decision_log_path)
             return make_skip_status("deduped", domain, phase)
 
     terms = extract_query(prompt)
     caps, caps_source, caps_raw_count, mentors, mentor_source = lookup_sources(
         terms, atlas_root, budget, http_fn=http_fn,
         daemon_ok=daemon_scores is not None)
+    skill_lines = build_skill_routing(domain, phase, prompt)
+
+    # v9-Kern (Befund 10): kein Material -> kein Feuer. Caps, Mentoren oder ein
+    # Skill-Hint müssen vorliegen; die Planungs-/Rahmenzeilen allein sind
+    # generischer Text und verbrauchen nur Cry-Wolf-Budget (52 % der
+    # v8-Feuerungen). Kein save_fired hier: ein späterer ähnlicher Prompt MIT
+    # Treffern darf feuern.
+    if not caps and not mentors and not skill_lines:
+        # caps_source/mentor_source bleiben am Skip-Event: die Auswertung muss
+        # "kein Material vorhanden" von "Quellen waren down" trennen können.
+        log_telemetry({"t": now, "skip": "no_material", "session": session_id,
+                       "prompt_preview": preview, "query": terms,
+                       "caps_raw_count": caps_raw_count,
+                       "caps_source": caps_source,
+                       "mentor_source": mentor_source, **ab}, log_path)
+        log_decision(decision_record("skip", "no_material", now=now, session_id=session_id,
+                                     prompt_preview=preview, classification=classification,
+                                     work_signals=gate_signals), decision_log_path)
+        return make_skip_status("no_material", domain, phase)
+
     # Unter 2 Content-Tokens ist die Vertiefungszeile Rauschen
     # (Live-Smoke 2026-07-07: memory_search_tool("weiter") auf Junk-Prompt).
-    skill_lines = build_skill_routing(domain, phase, prompt)
     ctx = compose_context(domain, phase, routing, caps,
                           query=terms if len(terms.split()) >= 2 else None,
                           mentors=mentors, skills=skill_lines)
@@ -1104,7 +1122,7 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
         log_decision(decision_record("emit", "precision_gate_pass", now=now,
                                      session_id=session_id, prompt_preview=preview,
                                      classification=classification,
-                                     work_signals=work_signals), decision_log_path)
+                                     work_signals=gate_signals), decision_log_path)
         log_telemetry({"t": now, "fired": True, "domain": domain, "phase": phase,
                        "key": key, "caps": caps, "caps_count": len(caps),
                        "caps_raw_count": caps_raw_count,

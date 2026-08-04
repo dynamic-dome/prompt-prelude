@@ -53,7 +53,10 @@ HERE = Path(__file__).resolve().parent
 DEFAULT_TELEMETRY = HERE / "prompt_prelude.jsonl"
 DEFAULT_PROJECTS = Path.home() / ".claude" / "projects"
 DEFAULT_WINDOW_S = 900.0     # 15 Min, gleiche Konvention wie eval_compliance
-DEFAULT_MIN_VERSION = 8      # skill_hint existiert erst ab Schema v8
+# v9 = aktuelle Ära (Advisory-Pivot: nur noch 2 routbare Skills, kein
+# Leer-Feuern — anderer Nenner als v8). Für den historischen v8-Vergleich
+# explizit --min-version 8 setzen; skill_hint existiert erst ab Schema v8.
+DEFAULT_MIN_VERSION = 9
 
 SKILL_CALL_RE = re.compile(r'"skill":"([^"]+)"')
 CMD_NAME_RE = re.compile(r"<command-name>/?([A-Za-z0-9_:-]+)</command-name>")

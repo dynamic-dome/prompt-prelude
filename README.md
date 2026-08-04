@@ -1,12 +1,27 @@
 # prompt-prelude
 
-UserPromptSubmit-Hook: routet Claude domänen-gezielt ins Capability-RAG (M2-Discovery),
-mit sichtbarer `↳ prelude`-Quittung, Telemetrie (`prompt_prelude.jsonl`) und Session-Dedupe.
+UserPromptSubmit-Hook, seit v9 (Advisory-Pivot, 2026-08-04) ein **Material-Kanal**:
+injiziert vorab gesuchte Capability-Treffer, frühere Fälle und (selten) einen
+Skill-Hint — und schweigt, wenn es nichts Konkretes zu liefern gibt.
+Telemetrie (`prompt_prelude.jsonl`), Decision-Log, Session-Dedupe.
+
+## v9-Leitidee: kein Material → kein Feuer
+Die v8-Messung (NOTES Befund 10) riss die vorregistrierte Falsifikationsschwelle
+des Advisory-Kanals: imperative Auftragstexte änderten das Agent-Verhalten nicht
+(+5 pp), 52 % der Feuerungen trugen nur generischen Text (`caps_count=0`).
+Konsequenz: die domänenspezifischen RAG-Auftragstexte (`DOMAIN_ROUTING`) sind
+entfernt; gefeuert wird nur noch, wenn Caps, Mentoren oder ein Skill-Hint
+vorliegen — sonst `skip: "no_material"` (Telemetrie trägt `caps_source`/
+`mentor_source`, um "nichts gefunden" von "Quelle down" zu trennen).
+Verhaltens-Hinweise, deren Moment NICHT der Prompt-Zeitpunkt ist, ziehen in
+Phase 2 an ihre Lifecycle-Punkte um: `docs/2026-08-04-vorgehen-advisory-pivot.md`.
 
 ## Verhalten
 - **Opt-out:** Prompt mit `//raw` beginnen → Hook überspringt (case-insensitiv).
-- **Still bei:** trivialen/kurzen Prompts, ohne erkannte Domain/Planung, oder wenn
-  `domain:phase` in dieser Session schon geroutet wurde (Dedupe). Der Key ist
+- **Still bei:** trivialen/kurzen Prompts, ohne Work-Signal (seit v9 zählt
+  `planning` als Work-Signal, Befund 9/10), ohne Material (`no_material`),
+  oder wenn `domain:phase` in dieser Session schon geroutet wurde (Dedupe;
+  ein `no_material`-Skip verbrennt den Dedupe-Key NICHT). Der Key ist
   bewusst `domain+phase`: quiet→planning derselben Domain feuert erneut.
 - **Maschinen-Prompts:** beginnt der Prompt mit `<task-notification>`,
   `<system-reminder>`, `<local-command-stdout>` oder `<command-name>`
@@ -27,18 +42,16 @@ emittiert, wenn die Env-Variable `PRELUDE_ECHO=1` gesetzt ist (jeder andere Wert
 oder unset = aus). Zum Verifizieren eines neuen Rollouts temporär setzen, danach
 wieder entfernen.
 
-## Mechanismus
-- **M2 (Kern):** domänen-gezielte RAG-Aufträge an Claude (`build_rag_routing`).
+## Mechanismus (v9)
+- **Material (Kern):** Caps als **vorgezogenes Suchergebnis** ("bereits
+  ausgeführt — prüfe diese Treffer": lesen statt selbst suchen) plus fertige
+  `memory_search_tool("<query>")`-Zeile zum Vertiefen (ab 2 Content-Tokens);
+  dazu die Ghost-Mentor-Partition (frühere Fälle). Domänenspezifische
+  Auftragstexte gibt es nicht mehr (Befund 10); bei `phase=planning` fährt
+  eine einzelne Politik-Zeile (SE-Wissensbasis §13 / Sparring §19) huckepack.
 - **BM25 (optional, fail-soft):** Treffer-Hinweise aus dem lokalen Atlas-Index.
-- **Wording (H1, seit 2026-07-02 abend):** keine Selbst-Entwertung mehr — die
-  früheren Labels "weicher Hinweis, kein Befehl" und "optional" gaben dem Modell
-  explizite Erlaubnis wegzuschauen (H4: 3-4 % Compliance ≈ Baseline). Jetzt:
-  imperativer Auftrag ("vor dem ersten Arbeitsschritt erledigen"), Caps als
-  **vorgezogenes Suchergebnis** ("bereits ausgeführt — prüfe diese Treffer
-  zuerst": lesen statt selbst suchen) plus fertige
-  `memory_search_tool("<query>")`-Zeile zum Vertiefen. Der Funnel (Dedupe,
-  Phasen, Skips) deckelt die Frequenz weiterhin — Cry-Wolf-Schutz liegt dort,
-  nicht in der Wortwahl.
+- **Funnel:** Dedupe, Phasen, Skips und das Material-Gate deckeln die Frequenz —
+  Cry-Wolf-Schutz liegt dort, nicht in der Wortwahl.
 - **HARD-Regeln (§3 Test-DB-Isolation etc.)** liegen bewusst NICHT hier, sondern im
   PreToolUse-Block-Hook (enforcing), nicht in diesem advisory-Kanal.
 
@@ -121,38 +134,30 @@ vs. 18/20 in der In-Process-Eval). Regression wird durch einen echten
 Subprocess-E2E-Test gefangen (`TestStdinEncodingE2E`) — In-Process-stdin-Mocks
 können diese Bug-Klasse prinzipiell nicht sehen.
 
-## Skill-Routing (v8, 2026-07-22)
-Zweiter Kanal neben dem RAG-Auftrag: statt Material zu liefern, nennt er die
-**auszuführende Aktion** — mit fertigem `Skill("name")`-Aufruf und, wo es eine
-echte Verwechslung gibt, mit explizitem **NICHT** samt Begründung. Das
-Negativ-Routing ist der eigentliche Wert: es kodiert Abgrenzungen, die sonst
-nirgends stehen (z.B. dass inhaltliche Code-Reviews über Codex laufen).
+## Skill-Routing (v8 → v9 reduziert)
+v8 baute den Kanal als messbaren Advisory-Test; die Auswertung nach 2 Wochen
+(Befund 10) zeigte: **nur Skills, deren Handlungsmoment der Prompt-Zeitpunkt
+ist, werden befolgt** (subagent-briefing 12 %, systematic-debugging 12 % —
+einzige über der 6 %-Baseline). Alle anderen lagen bei 0–2 %, weil ihr Moment
+später liegt (Subagent-Report trifft ein, Review am Task-Ende, …).
 
-Warum ein eigener Kanal: Der RAG-Auftrag injiziert die Caps **fertig mit**, der
-Agent kann sie passiv konsumieren — deshalb misst `eval_compliance` dort nur
-15 % → 18 % und kann "ignoriert" nicht von "schon geliefert" trennen (Befund 7).
-Ein SKILL.md-Body lässt sich nicht vorab injizieren: der Agent ruft ihn auf oder
-nicht. Der Kanal ist damit härter **und** sauber messbar.
+v9-Bestand: nur noch `SKILL_ROUTING` für `debug` (systematic-debugging) und
+`workflow` (subagent-briefing). `SKILL_RULES` und `SKILL_PHASE_ROUTING` sind
+leer — sqlite-schema-guard, review, verify-subagent-tallies & Co. ziehen in
+Phase 2 an ihre Lifecycle-Punkte (PostToolUse/PreToolUse/Stop) um, siehe
+`docs/2026-08-04-vorgehen-advisory-pivot.md`. `SKILL_HINT_MAX = 2` bleibt.
+Ein Skill-Hint zählt als Material (feuert auch ohne Caps).
 
-Konfiguration in `prompt_prelude.py`:
-- `SKILL_RULES` — keyword-getriggert, domänenunabhängig, höchste Priorität
-- `SKILL_ROUTING` — pro Domain
-- `SKILL_PHASE_ROUTING` — pro Phase (aktuell nur `planning`)
-- `SKILL_HINT_MAX = 2` — Deckel, sonst kippt der Block von Wegweiser zu Wand
+**Scope-Regel unverändert:** geroutet wird nur, wo mehrere Skills um denselben
+Anlass konkurrieren. Tote Skills gehören ins Archiv, nicht ins Routing
+(Guard-Test `TestNoDeadSkillReferences`).
 
-**Scope-Regel:** geroutet wird nur, wo mehrere Skills um denselben Anlass
-konkurrieren oder eine harte CLAUDE.md-Regel einen Skill verlangt. Projekt-
-gebundene Skills (`ich-mentor`, `ich-loop`, `stackatlas-content-studio`,
-`website-check`) bleiben bewusst draußen — dort ist die Wahl eindeutig, ein
-Hinweis wäre Rauschen. Tote Skills gehören ins Archiv, nicht ins Routing.
-
-**Wirksamkeit messen:** `python eval_skill_routing.py` joint die Telemetrie mit
-den Claude-Code-Transkripten (`~/.claude/projects/**.jsonl`) und prüft, ob ein
-empfohlener Skill danach wirklich gerufen wurde — als Skill-Tool **oder** als
-getippter Slash-Command. Beide Quellen zählen; wer nur `"skill":"…"` zählt,
-hält benutzte Skills fälschlich für tot (Messfehler vom 2026-07-22).
-**Baseline vor Einführung: 37/389 = 10 %** der fired-Events zogen einen der
-routbaren Skills von selbst. Das ist die Messlatte.
+**Wirksamkeit messen:** `python eval_skill_routing.py` (Default jetzt
+`--min-version 9`) joint die Telemetrie mit den Claude-Code-Transkripten und
+zählt Skill-Tool **und** getippte Slash-Commands. **Vorregistrierte v9-Latte:**
+die zwei verbliebenen Skills müssen ≥ 2× Baseline halten, sonst fliegen auch
+sie (Abschalt-Kriterium im Plan-Dokument). Historischer v8-Stand: FOLLOW 11 %
+vs. Baseline 6 % über alle 8 damals routbaren Skills.
 
 Ein Guard-Test (`TestNoDeadSkillReferences`) verhindert, dass das Routing
 Skills bewirbt, die es nicht mehr gibt — Anlass war `diagnose-hitl` (liegt in
@@ -161,9 +166,20 @@ beide monatelang in `DOMAIN_ROUTING` standen. **Bei Skill-Aufräumrunden hier
 mitziehen.**
 
 ## Telemetrie
-`prompt_prelude.jsonl` (gitignored, bleibt lokal): pro Prompt ein Event mit
+Zwei Log-Dateien (beide gitignored, bleiben lokal):
+
+`prelude_decisions.jsonl`: pro Prompt ein Decision-Record des Precision-Gates
+(`decision: emit|skip`, `reason`, Klassifikation mit `confidence`/`daemon_top`/
+`matched_keywords`, `work_signals`). Das ist die Debug-Sicht: WARUM hat der
+Hook (nicht) gefeuert. Auswerten, um Gate-Fehlentscheidungen zu finden
+(z. B. planning-Prompts, die an `no_work_signal` scheitern — Befund 9/10).
+
+`prompt_prelude.jsonl` (Haupt-Telemetrie): pro Prompt ein Event mit
 skip-Grund ODER `fired`-Routing. Auditierbare Felder pro Event:
-- `v` (Schema-Version, aktuell 8 = Skill-Routing, neue Felder
+- `v` (Schema-Version, aktuell 9 = Advisory-Pivot: neuer Skip `no_material`
+  mit `caps_source`/`mentor_source`/`query`/`caps_raw_count` am Skip-Event,
+  kein Leer-Feuern mehr — fired-Raten haben einen ANDEREN Nenner als v8;
+  8 = Skill-Routing, neue Felder
   `skill_hint`/`skill_hint_count` bei `fired`; 7 = Ghost-Mentor-Partition, Felder
   `mentor`/`mentor_count`/`mentor_source` + geänderte Injektions-Semantik;
   v6 = Threshold-Kalibrierung T-8; v5 = Caps-Gating atlas/-only + Query-Cleanup;
@@ -204,15 +220,21 @@ python -m pytest test_prompt_prelude.py -q
 Als erstes `UserPromptSubmit`-Matcher-Objekt in `~/.claude/settings.json`, mit
 explizitem `"timeout": 2` (gegen den 30s-Default-Hänger). Reine-stdlib, kein pip.
 
-## Trajektor (PostToolUse-Schwester, T-12)
+## Trajektor (PostToolUse-Schwester, T-12) — ARCHIVIERT 2026-08-04
 
-`trajektor.py` beobachtet den Tool-Call-Strom und misst Drift gegen den letzten
+`trajektor.py` beobachtete den Tool-Call-Strom und maß Drift gegen den letzten
 Arbeits-Prompt (Goal-Anchor, geschrieben von prompt_prelude beim Gate-Pass).
 Deterministischer 3-Komponenten-Score (token_shift 0.5 / path_divergence 0.3 /
 phase_flip 0.2), Hysterese fire=0.65/clear=0.45, Cooldown 10 Calls, max. 3
-Fires/Session. Bei Fire: Reframing-Zeile als additionalContext + sichtbare
-systemMessage. Fail-soft, Exit immer 0, keine Daemon-Calls.
+Fires/Session.
 
-Telemetrie: `trajektor.jsonl`, Ära **t1** (`tv`-Feld) — nie mit
-`prompt_prelude.jsonl`-Ären mischen. Kalibrierung der Schwellen ist bewusst
-nachgelagert (Telemetrie-Auswertung analog T-11).
+**Status: offiziell beerdigt (Owner-Entscheid 2026-08-04, NOTES Befund 11).**
+Der Hook war seit ~2026-07-28 still aus `settings.json` deregistriert;
+die Telemetrie (26.128 Events, 20.–28.07.) zeigt 37 Fires und **62 %
+`no_anchor`** — weil der Goal-Anchor nur beim seltenen Prelude-Gate-Pass
+geschrieben wurde, lief der Trajektor strukturell meist blind. Code + Tests
+bleiben im Repo (Referenz-Implementierung einer deterministischen
+Drift-Heuristik), werden aber nicht weiter gepflegt. Eine Wiederbelebung
+bräuchte zuerst die Anchor-Entkopplung von der Prelude-Fire-Rate.
+
+Telemetrie: `trajektor.jsonl`, Ära **t1** (`tv`-Feld), eingefroren.

@@ -5,6 +5,18 @@ import prompt_prelude as _pp
 
 
 @pytest.fixture(autouse=True)
+def hermetic_default_logs(monkeypatch, tmp_path):
+    """Kein Test darf je in die echten Telemetrie-/Decision-Logs im Projektordner
+    schreiben. run() fällt bei decision_log_path=None auf den Default zurück —
+    genau so landete ein t=0-Testeintrag im echten prelude_decisions.jsonl
+    (Befund 10, Nebenbefund). Defaults hart auf tmp umbiegen."""
+    monkeypatch.setattr(_pp, "_default_log_path",
+                        lambda: str(tmp_path / "default_telemetry.jsonl"))
+    monkeypatch.setattr(_pp, "_default_decision_log_path",
+                        lambda: str(tmp_path / "default_decisions.jsonl"))
+
+
+@pytest.fixture(autouse=True)
 def no_real_daemon(monkeypatch):
     """Kein Test darf je den echten Atlas-Daemon (127.0.0.1:7801) treffen —
     der läuft parallel evtl. (nicht) und würde die Suite nichtdeterministisch

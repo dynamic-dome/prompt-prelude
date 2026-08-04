@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
-"""v8 — Skill-Routing (2026-07-22).
+"""v8/v9 — Skill-Routing.
 
-Warum ein eigener Kanal neben dem RAG-Routing: der RAG-Kanal liefert Caps fertig
-mit, der Agent kann sie passiv konsumieren — deshalb misst eval_compliance dort
-nur 15%->18% (+3pp, NOTES Befund 7). Ein Skill-Body laesst sich nicht vorab
-injizieren; der Agent ruft ihn auf oder nicht. Diese Tests sichern Inhalt,
-Reihenfolge, Deckel und den Rueckwaerts-Kontrakt zu v7 ab.
+v8 (2026-07-22) baute den Kanal als messbaren Advisory-Test. v9 (2026-08-04,
+NOTES Befund 10) zog die Konsequenz aus der Messung: es bleiben nur die zwei
+Skills, deren Handlungsmoment der Prompt-Zeitpunkt ist (subagent-briefing,
+superpowers:systematic-debugging — je 12 % Follow, einzige über Baseline).
+SKILL_RULES und SKILL_PHASE_ROUTING sind leer; ihre Regeln ziehen in Phase 2
+an die richtigen Lifecycle-Punkte um (PostToolUse/PreToolUse). Diese Tests
+sichern den v9-Kontrakt: reduzierter Bestand, Deckel, Telemetrie, Guard.
 """
 import json as _json
 
@@ -20,55 +22,42 @@ class TestBuildSkillRouting:
         assert pp.build_skill_routing("data-analysis", "quiet",
                                       "mach eine tabelle daraus bitte") == []
 
-    def test_rule_pytest_triggers_schema_guard(self):
-        lines = pp.build_skill_routing("general", "quiet",
-                                       "laeuft pytest hier gegen eine echte db?")
-        assert any('Skill("sqlite-schema-guard")' in l for l in lines)
+    def test_v9_rules_are_empty(self):
+        # v9: pytest-/review-Trigger ziehen NICHT mehr am Prompt-Zeitpunkt —
+        # sqlite-schema-guard (1/12) und review (1/55) waren praktisch tot und
+        # ziehen in Phase 2 an PreToolUse/Stop um.
+        assert pp.SKILL_RULES == ()
+        assert pp.build_skill_routing("general", "quiet",
+                                      "laeuft pytest hier gegen eine echte db?") == []
+        assert pp.build_skill_routing("general", "quiet",
+                                      "kannst du das nochmal reviewen bitte") == []
 
-    def test_rule_conftest_stem_matches(self):
-        # "conftest*" ist ein Praefix-Stem -> auch "conftest.py" zieht
-        lines = pp.build_skill_routing("general", "quiet",
-                                       "schau in die conftest.py rein bitte")
-        assert any("sqlite-schema-guard" in l for l in lines)
-
-    def test_review_rule_carries_negative_routing(self):
-        lines = pp.build_skill_routing("general", "quiet",
-                                       "kannst du das nochmal reviewen bitte")
-        joined = " ".join(lines)
-        assert 'Skill("review")' in joined
-        assert "NICHT code-reviewer" in joined
-        assert "Codex" in joined
+    def test_v9_no_planning_phase_routing(self):
+        # office-hours/brainstorming/plan-ceo-review: 0-8 % Follow -> raus.
+        assert pp.SKILL_PHASE_ROUTING == {}
+        assert pp.build_skill_routing("data-analysis", "planning",
+                                      "ein konzept dafuer bitte") == []
 
     def test_domain_debug_routes_systematic_debugging(self):
         lines = pp.build_skill_routing("debug", "quiet", "irgendwas ist kaputt")
         assert any("superpowers:systematic-debugging" in l for l in lines)
 
-    def test_domain_workflow_routes_subagent_pair(self):
+    def test_domain_workflow_routes_subagent_briefing_only(self):
+        # v9: verify-subagent-tallies (0/50 Follow) ist raus — sein Moment ist
+        # der EINTREFFENDE Subagent-Report (Phase 2: PostToolUse), nicht der Prompt.
         lines = pp.build_skill_routing("workflow", "quiet", "starte ein paar subagenten")
         joined = " ".join(lines)
         assert 'Skill("subagent-briefing")' in joined
-        assert 'Skill("verify-subagent-tallies")' in joined
-
-    def test_phase_planning_separates_plan_skills(self):
-        lines = pp.build_skill_routing("data-analysis", "planning",
-                                       "ein konzept dafuer bitte")
-        joined = " ".join(lines)
-        assert "office-hours" in joined
-        assert "superpowers:brainstorming" in joined
-        assert "plan-ceo-review" in joined
+        assert "verify-subagent-tallies" not in joined
 
     def test_capped_at_max(self):
-        # pytest-Regel + review-Regel + debug-Domain + planning-Phase = 4 Kandidaten
+        # Der Deckel bleibt Kontrakt, auch wenn der v9-Bestand ihn kaum noch
+        # erreichen kann (max. 1 Domain-Zeile, keine Regeln/Phase-Zeilen).
+        assert pp.SKILL_HINT_MAX == 2
         lines = pp.build_skill_routing(
             "debug", "planning",
             "review mal das konzept, pytest laeuft gegen die db und es ist kaputt")
-        assert pp.SKILL_HINT_MAX == 2
-        assert len(lines) == 2
-
-    def test_rules_win_over_domain(self):
-        # Prioritaet: harte Regel-Trigger vor Domain
-        lines = pp.build_skill_routing("debug", "quiet", "pytest schlaegt fehl, bitte fixen")
-        assert "sqlite-schema-guard" in lines[0]
+        assert len(lines) <= pp.SKILL_HINT_MAX
 
     def test_no_duplicate_lines(self):
         lines = pp.build_skill_routing("debug", "quiet", "pytest conftest sqlite test-db")
@@ -77,20 +66,13 @@ class TestBuildSkillRouting:
     def test_none_prompt_is_safe(self):
         assert pp.build_skill_routing(None, "quiet", None) == []
 
-    def test_word_boundary_no_substring_false_fire(self):
-        # "preview" darf die review-Regel NICHT ziehen (\b-Matching, wie bei
-        # DOMAIN_HINTS nach dem ui/build-Fehlmatch-Befund).
-        lines = pp.build_skill_routing("general", "quiet",
-                                       "zeig mir eine preview der seite bitte")
-        assert not any("Skill(\"review\")" in l for l in lines)
-
 
 class TestSkillNames:
     def test_extracts_names_in_order(self):
         assert pp.skill_names(['Skill("a") und dann Skill("b")']) == ["a", "b"]
 
     def test_ignores_negative_mention(self):
-        # "NICHT code-reviewer" traegt keine Klammerform und darf nicht als
+        # Ein "NICHT xyz" traegt keine Klammerform und darf nicht als
         # Empfehlung in der Telemetrie landen — sonst misst die Eval Unsinn.
         lines = ['Skill("review") nutzen. NICHT code-reviewer verwenden.']
         assert pp.skill_names(lines) == ["review"]
@@ -114,11 +96,11 @@ class TestSkillCompose:
         out = pp.compose_context("debug", "quiet", ["tu X"], None)
         assert "SKILL-ROUTING" not in out
 
-    def test_skill_block_precedes_rag_block(self):
+    def test_skill_block_precedes_caps_block(self):
         # Design-Entscheid: die Aktion steht vor dem Hintergrundmaterial.
-        out = pp.compose_context("debug", "quiet", ["tu X"], ["atlas/skill:x"],
+        out = pp.compose_context("debug", "quiet", [], ["atlas/skill:x"],
                                  skills=['Skill("y") nutzen'])
-        assert out.index("SKILL-ROUTING") < out.index("RAG-AUFTRAG")
+        assert out.index("SKILL-ROUTING") < out.index("VORAB-SUCHE Capability-RAG")
 
     def test_skills_only_still_renders(self):
         out = pp.compose_context("general", "quiet", [], None, skills=['Skill("y")'])
@@ -169,17 +151,20 @@ class TestSkillRun:
         out = pp.run({"prompt": DEBUG_PROMPT, "session_id": "v8b"}, **self._kw(tmp_path))
         assert "· skill=1" in _json.loads(out)["systemMessage"]
 
-    def test_no_skill_hint_leaves_event_empty(self, tmp_path):
-        pp.run({"prompt": "schreibe eine kurze zusammenfassung von notes.md als "
-                          "fliesstext, hoechstens zehn saetze bitte",
-                "session_id": "v8c"}, **self._kw(tmp_path))
+    def test_no_skill_no_caps_skips_no_material(self, tmp_path):
+        # v9-Kern: ohne Skill-Hint UND ohne Caps/Mentoren feuert nichts mehr —
+        # in v8 waere dieser Prompt mit nur generischem Auftragstext gefeuert
+        # (52 % aller v8-Feuerungen, Befund 10).
+        out = pp.run({"prompt": "schreibe eine kurze zusammenfassung von notes.md als "
+                                "fliesstext, hoechstens zehn saetze bitte",
+                      "session_id": "v8c"}, **self._kw(tmp_path))
         ev = self._last_event(tmp_path)
-        assert ev["skill_hint"] == []
-        assert ev["skill_hint_count"] == 0
+        assert ev["skip"] == "no_material"
+        assert "fired" not in ev
 
     def test_schema_version_bumped(self, tmp_path):
         pp.run({"prompt": DEBUG_PROMPT, "session_id": "v8d"}, **self._kw(tmp_path))
-        assert self._last_event(tmp_path)["v"] == 8
+        assert self._last_event(tmp_path)["v"] == 9
 
 
 class TestNoDeadSkillReferences:
@@ -203,8 +188,10 @@ class TestNoDeadSkillReferences:
                 "particles-router", "test-validator", "brain-dump-router"]
 
     def _all_routing_text(self):
-        parts = list(pp.DOMAIN_ROUTING.values())
-        parts.append(pp.PLANNING_ROUTING)
+        # v9: DOMAIN_ROUTING existiert nicht mehr; die leeren Strukturen
+        # (SKILL_PHASE_ROUTING/SKILL_RULES) bleiben absichtlich im Sweep,
+        # damit ein Phase-2-Wiedereinbau automatisch mitgeprueft wird.
+        parts = [pp.PLANNING_ROUTING]
         parts.extend(pp.SKILL_ROUTING.values())
         parts.extend(pp.SKILL_PHASE_ROUTING.values())
         parts.extend(line for _kws, line in pp.SKILL_RULES)
