@@ -138,6 +138,52 @@ Phasen-Routing dürfte deshalb selten feuern. Erst messen (`skill_hint`-Rate fü
 die Planungszeile), dann entscheiden, ob das Gate für diesen Zweig aufgeweicht
 wird — nicht vorab am Gate drehen.
 
+## Befund 10 (2026-08-04, Inventur): Skill-Routing-Messung — advisory-Kanal nach eigenem Kriterium widerlegt
+Erste v8-Auswertung nach 2 Wochen Live-Daten (1646 Events, 174 fired, 22.07.–04.08.).
+`eval_skill_routing.py`: **FOLLOW 11/103 = 11 % vs. Baseline 4/71 = 6 % = +5 pp.**
+Die in Befund 9 vorregistrierte Messlatte („ein FOLLOW um 10 % widerlegt den
+advisory-Kanal endgültig") ist gerissen. `eval_compliance --min-version 8`
+konsistent: 13 % fired vs. 8 % Skip-Baseline, ebenfalls +5 pp.
+
+**Das eigentliche Muster liegt in der Pro-Skill-Tabelle — Timing, nicht Wording:**
+- 0–2 %: `verify-subagent-tallies` (0/50), `office-hours` (0/25),
+  `plan-ceo-review` (0/25), `review` (1/55) — alles Skills, deren
+  Handlungsmoment NICHT der Prompt-Zeitpunkt ist (Subagent-Report trifft später
+  ein; Review/CEO-Review stehen am ENDE der Arbeit; office-hours braucht
+  Planungs-Prompts, die das work_signal-Gate wegfiltert).
+- 12 %: `subagent-briefing` (6/50), `superpowers:systematic-debugging` (1/8) —
+  die einzigen, deren Aktion unmittelbar nach dem Prompt fällig ist.
+
+Ein Hinweis wirkt (schwach) nur, wenn der Handlungsmoment JETZT ist. Weitere
+Wording-Iterationen (H1-Stil) sind damit tot; die Konsequenz ist ereignis-
+richtiges Timing (PostToolUse auf Subagent-Ergebnisse, PreToolUse auf pytest,
+Stop-Hook für End-of-Task) bzw. T-4-Gates für harte Regeln.
+
+**Nebenbefunde derselben Auswertung:**
+- 52 % der fired-Events haben `caps_count=0` — es bleibt nur generischer
+  Auftragstext. „Leer besser als falsch" gilt bisher nur für die Trefferliste,
+  nicht für den Auftrag selbst → Kandidat: ohne Material gar nicht feuern.
+- `rearmed: 0` in ganz v8 — der Re-Arm-Mechanismus wird real nie ausgelöst.
+- Daemon-Routing bei fired nur 7/174 (4 %), obwohl der Daemon läuft und healthy
+  ist (Threshold-Ablehnungen + Keyword-Vorrang); `routing_source` fallback 74×.
+- Precision-Gate vs. planning, Befund 9 jetzt mit Zahlen: 59 als `planning`
+  klassifizierte Prompts wurden `no_work_signal` geskippt — darunter der
+  Inventur-Prompt dieser Auswertung selbst (data-analysis/planning, conf 0.85).
+- Decision-Log enthält mind. einen Record mit `t=0` (1970) — Mini-Bug im
+  Timestamp-Pfad, bei Gelegenheit fixen.
+
+## Befund 11 (2026-08-04): Trajektor war still deregistriert — offiziell beerdigt
+Bei der Inventur gefunden: `trajektor.py` stand NICHT mehr in den
+PostToolUse-Hooks von `~/.claude/settings.json`; `trajektor.jsonl` endet am
+28.07. Die 8 Live-Tage zeigen: 26.128 Events, 37 Fires, Status-Verteilung
+`no_anchor` 16.221 (62 %), `below` 7.285, `not_armed` 2.292 — der Goal-Anchor
+wurde nur beim seltenen Prelude-Gate-Pass geschrieben, der Trajektor war
+strukturell meist blind (Kopplungsfehler, nicht Schwellen-Problem).
+**Owner-Entscheid 2026-08-04: offiziell archiviert.** Code + Tests bleiben als
+Referenz im Repo, README-Abschnitt trägt den Archiv-Status. Lehre: ein Hook,
+dessen Vorbedingung (Anchor) von der Fire-Rate eines anderen Hooks abhängt,
+erbt dessen Funnel — Vorbedingungen entkoppeln oder gar nicht erst bauen.
+
 ## Status (aktualisiert 2026-07-02 abend, Iteration 1)
 - Befund 1: `domain+phase`-Key + RAG-Bezug-Re-Arm umgesetzt (frühere Session).
   **Offen:** Re-Arm nach N Prompts (State-Format `set` → `{key: fired_at}`) —
