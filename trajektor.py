@@ -281,7 +281,9 @@ def make_ptu_output(additional_context, system_message):
 
 
 def _default_traj_log():
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "trajektor.jsonl")
+    # Lazy + Env-Override: nur so erreicht ein Test-Override auch den Subprozess.
+    return (os.environ.get("TRAJEKTOR_LOG")
+            or os.path.join(os.path.dirname(os.path.abspath(__file__)), "trajektor.jsonl"))
 
 
 def run_traj(payload, *, state_dir, log_path, now):
@@ -348,7 +350,8 @@ def main():
 
 
 def _default_state_dir():
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), ".dedupe")
+    return (os.environ.get("TRAJEKTOR_STATE_DIR")
+            or os.path.join(os.path.dirname(os.path.abspath(__file__)), ".dedupe"))
 
 
 if __name__ == "__main__":
