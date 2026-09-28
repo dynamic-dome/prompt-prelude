@@ -256,6 +256,49 @@ Env-Opt-out für Headless-Aufrufe) · Daemon warm halten oder `/classify` streic
 (Prompt, injiziertes Material) als Konsum-Proxy ohne Tracker-Argument-Logging ·
 Work-Signal-Vokabular gegen die 424 Skips nachkalibrieren.
 
+## Befund 13 (2026-09-28, Replay + blinder Judge): Das Material hilft selten — und keine Query-Variante ändert das genug
+Erste echte Relevanz-Messung (Plan: `docs/2026-09-28-plan-relevanz-replay.md`,
+Kriterium vorab festgelegt). Korpus: 870 Prompts der letzten 30 Tage in
+Hook-Sicht; Stichprobe: alle 140 Gate-Pass-Prompts + 60 substanzielle
+`no_work_signal`-Prompts. 366 (Prompt, Record)-Paare, blind bewertet von drei
+Sonnet-Subagenten (je eine Batch, sequenziell), 366/366 gültig, Zählungen
+selbst nachgeprüft. Kalibrierung Batch 1 gegen Agent-Urteil: "2 vs. nicht 2"
+13/15 übereinstimmend, Judge eher großzügig. (Batch 2+3 bekamen im Prompt
+zusätzlich die Strenge-Regel des Briefs wiederholt; Paare sind zufällig auf
+Batches verteilt, kein Varianten-Bias.)
+
+**Gate-Pass-Prompts (n=140, entscheidungsrelevant):**
+
+| Variante | Material | useful | noise | Präzision (2) |
+|---|---|---|---|---|
+| V0 Baseline v10 | 46 % | **15 %** | **24 %** | 25 % |
+| V1 Projekt-Partition | 59 % | 21 % | 27 % | 26 % |
+| V2 Gesprächskontext | 49 % | 11 % | 33 % | 23 % |
+| V3 beides | 63 % | 17 % | 36 % | 26 % |
+
+**Entscheid nach Kriterium (useful ≥ +10 pp, noise ≤ +5 pp): keine Variante
+wird übernommen.** V1 verfehlt knapp (+6 pp; gepaart: 8 Prompts gewonnen,
+8 neue Rausch-Fälle, 4 Rausch-Fälle weg). V2 schadet klar (−4 pp useful,
++9 pp noise): die Begriffe der letzten Antwort ziehen die Suche vom Prompt weg.
+Bei `no_work_signal` (n=60, beschreibend) hebt V1 useful 10 → 20 %.
+
+**Kernbefund:** In der Baseline bekommen 15 % der Arbeits-Prompts mindestens
+einen hilfreichen Treffer, 24 % bekommen ausschließlich Rauschen — der Kanal
+liefert öfter Rauschen als Hilfe. Damit ist die v9-Frage "nützt das
+Material?" erstmals beantwortet: selten, und die Query ist nicht der Hebel.
+
+**Explorativ (Hypothesen, keine Entscheidung):** Präzision nach Partition —
+Caps 18 % (2er) / 27 % (≥1), Mentoren 26 / 44 %, Projekt 25 / 51 %. Die
+`atlas/`-Caps, seit v5 als Relevanz-Gate gedacht, sind die schwächste
+Partition; `atlas/project-deep`-Karten (häufigster Typ, n=98) nur 16 % 2er.
+Wiki-Entities 31 / 73 %. Der Hebel liegt vermutlich bei einem Relevanz-Gate
+pro Item, nicht bei der Query.
+
+**Nebenbei live belegt:** UserPromptSubmit liefert `cwd`, `transcript_path`,
+`prompt_id`, `permission_mode`, `hook_event_name` (Feld `payload_keys`).
+`<agent-message` (Subagent-Hand-back) bekam Material injiziert → Marker
+ergänzt, beim nächsten Hand-back live als `machine_prompt` übersprungen.
+
 ## Status (aktualisiert 2026-07-02 abend, Iteration 1)
 - Befund 1: `domain+phase`-Key + RAG-Bezug-Re-Arm umgesetzt (frühere Session).
   **Offen:** Re-Arm nach N Prompts (State-Format `set` → `{key: fired_at}`) —

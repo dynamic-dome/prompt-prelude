@@ -76,6 +76,14 @@ class TestShouldSkip:
              "</cross-session-message>")
         assert pp.should_skip(p) == (True, "machine_prompt")
 
+    def test_agent_message_skips(self):
+        # Live 2026-09-28: die Hand-back-Meldung eines Subagenten kam als
+        # <agent-message from="…"> und bekam Material + Skill-Hint injiziert.
+        p = ('<agent-message from="aa59dd22c06d5f320">\n[Subagent hand-back] The text '
+             "below is the final report of a subagent this session delegated to.\n"
+             "</agent-message>")
+        assert pp.should_skip(p) == (True, "machine_prompt")
+
     def test_pasted_content_is_user_intent(self):
         # Vom User eingefügter Text ist Absicht, kein Automat — bleibt normal.
         skip, reason = pp.should_skip('<pasted_content id="7a2e">\nP1 – die seite '
@@ -112,6 +120,19 @@ class TestHeadless:
         _out, ev = self._run(tmp_path)
         assert ev.get("skip") != "headless"
         assert ev["entrypoint"] == "cli"
+
+    def test_events_carry_payload_keys(self, tmp_path):
+        # Live-Beleg-Pflicht (Hooks-bau): bevor v11 cwd/transcript_path nutzt,
+        # muss die Telemetrie zeigen, dass UserPromptSubmit sie wirklich liefert.
+        log = tmp_path / "l"
+        for prompt in ("ok", self.WORK_PROMPT):  # Skip-Pfad und Such-Pfad
+            pp.run({"prompt": prompt, "session_id": "s", "cwd": "C:/x",
+                    "transcript_path": "C:/t.jsonl"},
+                   atlas_root="x", state_dir=str(tmp_path / "st"), log_path=str(log), now=1.0)
+        events = [_json.loads(l) for l in log.read_text(encoding="utf-8").splitlines()]
+        assert len(events) == 2
+        for ev in events:
+            assert ev["payload_keys"] == ["cwd", "prompt", "session_id", "transcript_path"]
 
     def test_missing_entrypoint_is_not_headless(self, tmp_path, monkeypatch):
         # Fehlt die Variable (ältere/andere Harness), bleibt das bisherige

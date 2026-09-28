@@ -30,7 +30,10 @@ MACHINE_PROMPT_MARKERS = ("<task-notification>", "<system-reminder>",
                           "<local-command-stdout>", "<command-name>",
                           # v10 (Befund 12): Nachrichten anderer Claude-Sessions;
                           # der Tag trägt Attribute (from="uds:…") -> ohne ">".
-                          "<cross-session-message")
+                          "<cross-session-message",
+                          # Subagent-Hand-backs (live 2026-09-28: bekamen Material
+                          # + Skill-Hint injiziert), ebenfalls mit Attributen.
+                          "<agent-message")
 
 # v10 (Befund 12): Headless-Läufe (`claude -p` = sdk-cli, Agent-SDK = sdk-py/
 # sdk-ts) sind Automaten — v9 injizierte 37× Material in DCO-Digests. Claude
@@ -993,6 +996,128 @@ def lookup_sources(terms, atlas_root, budget, http_fn=None, limit=3, daemon_ok=T
             mentors, ("sqlite" if mentors else "none"))
 
 
+# --- v11-Kandidaten (docs/2026-09-28-plan-relevanz-replay.md) ---------------
+# Reine Funktionen, kein I/O: der Replay-Harness misst sie offline, der Hook
+# übernimmt nur, was das vorregistrierte Kriterium besteht.
+# STATUS (NOTES Befund 13): VOM HOOK NICHT GENUTZT — Projekt-Anker +6 pp
+# (Kriterium +10 pp knapp verfehlt), Gesprächskontext schädlich. Bleiben für
+# den Replay und künftige Varianten (z. B. Projekt-Partition + Item-Gate).
+
+# Idee 1 — Projekt-Anker. Befund 12: nützlich waren v. a. projektbezogene
+# Learnings (DCO L140), die Fehlgriffe fast alle projektfremde Hub-Records.
+# Sammelordner direkt unter Home sind kein Projekt; tiefe Code-Ordner auch nicht.
+_LEADING_GENERIC_DIRS = {"ai", "desktop", "claude-projekte", "documents", "onedrive",
+                         "projekte", "projects", "repos", "code", "dev"}
+_TRAILING_GENERIC_DIRS = {"src", "tests", "test", "lib", "docs", "scripts", "app",
+                          "packages", "data", "tools"}
+PROJECT_SLUG_DEPTH = 2
+
+
+def _norm_slug(text):
+    return re.sub(r"[_\s]+", "-", str(text).strip().lower())
+
+
+def project_slugs(cwd, depth=PROJECT_SLUG_DEPTH):
+    """Projekt-Slugs aus dem Arbeitsordner, spezifischster zuerst.
+    C:\\Users\\domes\\AI\\Hooks-bau\\prompt-prelude -> [prompt-prelude, hooks-bau]."""
+    try:
+        parts = [p for p in re.split(r"[\\/]+", str(cwd or "")) if p and not p.endswith(":")]
+        low = [p.lower() for p in parts]
+        if "users" in low and low.index("users") + 1 < len(parts):
+            rest = parts[low.index("users") + 2:]
+        else:
+            rest = parts[-1:]
+        while rest and _norm_slug(rest[0]) in _LEADING_GENERIC_DIRS:
+            rest = rest[1:]
+        slugs = [_norm_slug(p) for p in rest[:depth]]
+        slugs = [s for s in slugs if s and s not in _TRAILING_GENERIC_DIRS]
+        return list(reversed(slugs))
+    except Exception:
+        return []
+
+
+def record_matches_slugs(record_id, slugs):
+    """Slug als ganzes Token im normalisierten record_id (_ und - gleich)."""
+    rid = _norm_slug(record_id or "")
+    for s in slugs or []:
+        if s and re.search(r"(?<![a-z0-9])" + re.escape(s) + r"(?![a-z0-9])", rid):
+            return True
+    return False
+
+
+# Replay-Befund 2026-09-28: bloßes Umsortieren der normalen Top 12 änderte in
+# 0/154 Prompts etwas — Projekt-Records sind dort selten und scheitern an den
+# Partitions-Filtern. Der Anker sucht deshalb aktiv (zweite Query mit
+# Projektname, 41 -> 64/154 Abdeckung) und liefert eine eigene Partition.
+PROJECT_HIT_LIMIT = 2
+
+
+def project_query(terms, slugs):
+    """Query für die Projekt-Suche: Terms + Wörter des spezifischsten Slugs
+    (ohne Dubletten). Ohne Slug -> '' (keine Projekt-Suche)."""
+    if not slugs:
+        return ""
+    have = str(terms or "").split()
+    low = {t.lower() for t in have}
+    extra = [w for w in str(slugs[0]).split("-") if w and w.lower() not in low]
+    return " ".join(have + extra).strip()
+
+
+def select_project_hits(results, slugs, limit=PROJECT_HIT_LIMIT, exclude=()):
+    """Treffer, die zum Projekt gehören (Slug im record_id), in Such-Reihenfolge,
+    ohne bereits injizierte record_ids. Beliebiger Präfix — gerade Learnings,
+    Decisions und Projekt-Docs fallen durch die Caps-/Mentor-Filter."""
+    try:
+        if not slugs:
+            return []
+        out = []
+        for r in results or []:
+            if not isinstance(r, dict):
+                continue
+            rid = r.get("record_id")
+            if rid in exclude or not record_matches_slugs(rid, slugs):
+                continue
+            out.append(r)
+            if len(out) >= limit:
+                break
+        return out
+    except Exception:
+        return []
+
+
+# Idee 2 — Gesprächskontext: Folge-Prompts ("raus damit", "mach weiter mit X")
+# tragen kaum Suchbegriffe; das Thema steht in der letzten Assistant-Antwort.
+CONTEXT_TERM_RE = re.compile(r"[A-Za-zÄÖÜäöüß][A-Za-zÄÖÜäöüß0-9_-]{5,}")
+CONTEXT_CODE_FENCE_RE = re.compile(r"```.*?```", re.S)
+CONTEXT_TERMS_LIMIT = 6
+_CONTEXT_STOP = {"werden", "wurde", "wurden", "können", "koennen", "sollte", "sollten",
+                 "müssen", "muessen", "zwischen", "gerade", "bereits", "danach", "dieser",
+                 "diese", "dieses", "diesen", "einen", "einem", "einer", "nicht", "schon",
+                 "damit", "wieder", "sowie", "weil", "deshalb", "darauf", "welche", "welcher",
+                 "ohne", "unter", "immer", "allerdings", "außerdem", "ausserdem", "should",
+                 "would", "because", "before", "after", "their", "there", "which"}
+
+
+def context_terms(text, prompt_terms="", limit=CONTEXT_TERMS_LIMIT):
+    """Häufigste signifikante Begriffe (>= 6 Zeichen) der letzten Antwort,
+    ohne Code-Blöcke und ohne Begriffe, die der Prompt schon trägt.
+    Gleichstand -> Reihenfolge des ersten Auftretens."""
+    try:
+        body = CONTEXT_CODE_FENCE_RE.sub(" ", str(text or ""))
+        have = {t.lower() for t in str(prompt_terms or "").split()}
+        counts, first = {}, {}
+        for i, tok in enumerate(CONTEXT_TERM_RE.findall(body)):
+            t = tok.lower()
+            if t in _CONTEXT_STOP or t in STOP_WORDS or t in have:
+                continue
+            counts[t] = counts.get(t, 0) + 1
+            first.setdefault(t, i)
+        ranked = sorted(counts, key=lambda t: (-counts[t], first[t]))
+        return ranked[:max(0, int(limit))]
+    except Exception:
+        return []
+
+
 def lookup_capabilities(terms, atlas_root, budget, http_fn=None, limit=3, daemon_ok=True):
     """Rückwärts-kompatibler Caps-Blick auf lookup_sources (3-Tupel-Kontrakt)."""
     return lookup_sources(terms, atlas_root, budget, http_fn=http_fn,
@@ -1007,6 +1132,9 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
     preview = str(prompt).strip()[:80]
     decision_log_path = decision_log_path or _default_decision_log_path()
     work_signals = detect_work_signals(prompt)
+    # Live-Beleg-Pflicht (Hooks-bau): welche Felder liefert UserPromptSubmit
+    # wirklich? Voraussetzung, bevor v11 cwd/transcript_path nutzt.
+    payload_keys = sorted(str(k) for k in payload)
 
     if is_headless(current_entrypoint()):
         skip, reason = True, "headless"
@@ -1014,7 +1142,7 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
         skip, reason = should_skip(prompt)
     if skip:
         log_telemetry({"t": now, "skip": reason, "session": session_id,
-                       "prompt_preview": preview}, log_path)
+                       "prompt_preview": preview, "payload_keys": payload_keys}, log_path)
         log_decision(decision_record("skip", reason, now=now, session_id=session_id,
                                      prompt_preview=preview, work_signals=work_signals),
                      decision_log_path)
@@ -1045,6 +1173,7 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
                        for s in (daemon_scores or [])[:3]],
         "keyword_domain": keyword_domain,
         "daemon_latency_ms": daemon_latency_ms,
+        "payload_keys": payload_keys,
     }
 
     # Phase-Erkennung bleibt bewusst Keyword-basiert (nicht Daemon).

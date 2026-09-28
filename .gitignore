@@ -6,3 +6,6 @@ trajektor.jsonl
 .dedupe/
 .agent-memory/
 pytest_tmp/
+replay/data/
+keepalive.jsonl
+keepalive.jsonl.1

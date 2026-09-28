@@ -25,8 +25,9 @@ Phase 2 an ihre Lifecycle-Punkte um: `docs/2026-08-04-vorgehen-advisory-pivot.md
   bewusst `domain+phase`: quiet→planning derselben Domain feuert erneut.
 - **Maschinen-Prompts:** beginnt der Prompt mit `<task-notification>`,
   `<system-reminder>`, `<local-command-stdout>`, `<command-name>` oder
-  (seit v10) `<cross-session-message` (harness-generiert bzw. Nachricht einer
-  anderen Claude-Session, kein User-Intent), wird mit `skip: "machine_prompt"`
+  (seit v10) `<cross-session-message` bzw. `<agent-message` (harness-generiert,
+  Nachricht einer anderen Claude-Session oder Subagent-Hand-back, kein
+  User-Intent), wird mit `skip: "machine_prompt"`
   übersprungen. Live-Befund 2026-07-02: Subagent-Callbacks produzierten
   Fehl-Routings (ui-frontend auf Telemetrie-Reports) und verzerrten die
   H4-Compliance-Messung. `<pasted_content>` bleibt bewusst User-Intent.
@@ -222,6 +223,39 @@ ECHO-Quittung durch Ground-Truth. **Erstbefund 2026-07-02: 1/26 fired-Events
 befolgt (4 %), Skip-Baseline 3 % — der Hinweis ändert das Agent-Verhalten
 bisher praktisch nicht.** Kandidaten: Prelude-Wording schärfen (imperativer),
 Fenster/Attribution prüfen, nach H1-Telemetriewoche neu messen.
+
+## Replay-Harness + Relevanz-Judge (seit 2026-09-28)
+Offline-Messung der Material-Qualität, statt jede Änderung als 2-Wochen-Live-Ära
+zu fahren. Plan + vorregistriertes Übernahmekriterium:
+`docs/2026-09-28-plan-relevanz-replay.md`.
+
+```
+python -m replay.corpus            # Korpus aus Transkripten fortschreiben (append-only)
+python -m replay.run               # Varianten V0-V3 gegen den Daemon fahren
+python -m replay.judge prepare     # neue (Prompt, Record)-Paare als Batches
+#   -> je Batch EIN Sonnet-Subagent mit replay/JUDGE_BRIEF.md, schreibt verdicts_NN.jsonl
+python -m replay.judge score       # Metriken je Variante + Kriterium
+```
+
+- **Korpus:** echte, getippte Prompts interaktiver Sessions in Hook-Sicht
+  (Slash-Commands als `/name args`, Bash-Modus raus), mit `cwd` und letzter
+  Assistant-Antwort. Liegt in `replay/data/` — **gitignored** (volle Prompts,
+  Repo ist öffentlich). Append-only, damit `cleanupPeriodDays` nichts löscht:
+  regelmäßig `python -m replay.corpus` laufen lassen.
+- **Gate-Nachbau validiert:** 836/836 Korpus-Prompts stimmen mit der
+  v9-Live-Telemetrie überein.
+- **Judge:** blind (keine Varianten-/Partitions-Info), Paar-Cache, Noten 0/1/2.
+  Kalibrierung Batch 1: 13/15 Übereinstimmung mit Agent-Urteil bei "2 vs.
+  nicht 2" — tendenziell etwas großzügig, für Varianten-Vergleiche tauglich.
+
+## Daemon-Keepalive (Idee 8, seit 2026-09-28)
+`tools/daemon_keepalive.py` schickt alle 5 Minuten ein Mini-`/search` an den
+Atlas-Daemon (User-Task `Prelude-Atlas-Keepalive`, pythonw, nur bei Anmeldung).
+Anlass Befund 12: 21 % der `/classify`-Calls liefen ins Timeout, nach ≥ 1 h
+Leerlauf 59 %. Jeder Ping wird mit Latenz nach `keepalive.jsonl` geloggt
+(gitignored). Registrieren/Entfernen:
+`powershell -ExecutionPolicy Bypass -File tools\register-keepalive-task.ps1 [-Unregister]`.
+Erfolgskriterium: `daemon_latency_ms >= 450` sinkt in der Telemetrie unter 8 %.
 
 ## Housekeeping
 `.dedupe/`-Dateien älter als 7 Tage werden bei jedem Lauf fail-soft gelöscht.
