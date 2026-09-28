@@ -129,17 +129,23 @@ def main(argv=None):
     ap.add_argument("cmd", choices=["prepare", "score"])
     ap.add_argument("--batch-size", type=int, default=125)
     ap.add_argument("--seed", type=int, default=5)
+    ap.add_argument("--runs-dir", default="runs", help="Unterordner von data/ (runs | runs_holdout)")
     args = ap.parse_args(argv)
     corpus = {}
     for line in (data / "corpus.jsonl").read_text(encoding="utf-8").splitlines():
         if line.strip():
             e = json.loads(line)
             corpus[e["pid"]] = e
-    runs = _load_runs(data / "runs")
+    runs = _load_runs(data / args.runs_dir)
     pairs = collect_pairs(runs, corpus)
+    # Verdikt-Cache über ALLE Läufe: frühere Paare sind bekannt, nicht ungültig.
+    all_pairs = dict(pairs)
+    for other in sorted(data.glob("runs*")):
+        if other.is_dir():
+            all_pairs.update(collect_pairs(_load_runs(other), corpus))
     jdir = data / "judge"
     jdir.mkdir(parents=True, exist_ok=True)
-    verdicts, bad = load_verdicts(sorted(jdir.glob("verdicts_*.jsonl")), known=set(pairs))
+    verdicts, bad = load_verdicts(sorted(jdir.glob("verdicts_*.jsonl")), known=set(all_pairs))
     if args.cmd == "prepare":
         batches = make_batches(pairs, set(verdicts), args.batch_size, args.seed)
         start = len(list(jdir.glob("batch_*.jsonl"))) + 1
@@ -151,7 +157,8 @@ def main(argv=None):
               f"neue Batches: {len(batches)} ({sum(len(b) for b in batches)} Paare)")
         return 0
     metrics = score_runs(runs, verdicts)
-    print(f"Verdikte: {len(verdicts)}/{len(pairs)} | ungültige Zeilen: {len(bad)}")
+    print(f"Verdikte für diesen Lauf: {len(set(verdicts) & set(pairs))}/{len(pairs)} | "
+          f"ungültige Zeilen: {len(bad)}")
     for line in bad[:5]:
         print("  UNGÜLTIG:", line)
     for gate in ("pass", "no_work_signal"):

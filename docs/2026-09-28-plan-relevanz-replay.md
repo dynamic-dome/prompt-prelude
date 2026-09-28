@@ -74,6 +74,71 @@ useful 15 %, noise 24 % auf Gate-Pass-Prompts. V1 +6 pp (knapp verfehlt),
 V2 schadet. Nächster Hebel laut explorativer Aufschlüsselung: Relevanz-Gate
 pro Item (Caps-Partition 18 % Präzision) statt Query-Varianten.
 
+## Runde 2: Präzisions-Kanal (v11-Kandidat) — vorregistriert VOR der Berechnung
+
+Owner-Auftrag 2026-09-28: das Konzept zu einem wirklich hilfreichen Hook
+ausbauen. Leitgedanke nach Befund 13: **weniger, aber verlässliche Treffer —
+und deren Inhalt direkt einspielen**, weil Verweise kaum nachgelesen werden
+(Befund 7: +2–3 pp Atlas-Calls nach Feuern).
+
+**Kandidat "P":** Kandidaten = V1 (normale Suche + Projekt-Partition), dann
+Item-Gate: ein Treffer bleibt nur, wenn die Kosinus-Ähnlichkeit zwischen
+Prompt (auf 500 Zeichen gekappt, wie `/classify` im Hook) und Treffer-Text
+(Snippet) ≥ τ ist. Berechnet über den bestehenden `/classify`-Endpoint
+(Labels = Treffer-Snippets) — keine Daemon-Änderung. Treffer ohne Snippet
+fallen raus. Präsentation mit Inhalt ändert die Judge-Grundlage nicht (der
+Judge sah Hint + Snippet).
+
+**Verfahren:** Split nach `int(sha1(pid), 16) % 2` in Hälfte A (0) und B (1).
+τ wird NUR auf A gewählt: kleinstes τ aus {0.20, 0.25, …, 0.60}, bei dem auf A
+gilt noise_rate ≤ 0,5 × V0 und useful_rate ≥ V0 − 2 pp (Gate-Pass-Prompts);
+erfüllt keines, das τ mit der kleinsten noise_rate unter der useful-Bedingung.
+Danach wird τ eingefroren und einmal auf B gemessen.
+
+**Übernahmekriterium auf B (Gate-Pass-Prompts):**
+noise_rate(P) ≤ 0,5 × noise_rate(V0) **und** useful_rate(P) ≥ useful_rate(V0) − 2 pp.
+Zusätzlich berichtet: Anteil hilfreicher Feuerungen (useful / material) und
+die `no_work_signal`-Gruppe (entscheidet, ob das Work-Signal-Gate gelockert
+werden kann: nur wenn dort P ebenfalls noise ≤ 0,5 × V0 schafft).
+
+**Bekannte Grenzen:** B hat nur ~70 Gate-Pass-Prompts; ein Bestehen ist ein
+starkes Indiz, keine Gewissheit. Bestätigung später an neuen Prompts (der
+Korpus wächst täglich), dann mit frischem Judge-Durchlauf.
+
+### Ergebnis Runde 2
+τ = 0,30 auf A (Rückfall-Wahl, kein τ halbierte dort das Rauschen); auf B
+noise 30 % vs. V0 28 % — **nicht erfüllt**. Explorativ: kein billiges Signal
+trennt gut (AUC Kosinus 0,62, Wort-Overlap 0,65; nur innerhalb der Caps
+Kosinus 0,75). Ebenfalls explorativ: V1 am **Session-Anfang** useful 29 % vs.
+V0 15 % (n=52), bei Fortsetzungen nur +5 pp — am Anfang fehlt Claude der
+Projektkontext.
+
+## Runde 3: Session-Start-Projektkarte — vorregistriert VOR der Messung
+
+Die Session-Start-Beobachtung stammt aus denselben Daten, auf denen gesucht
+wurde (Forking-Paths-Risiko) — sie gilt erst nach Prüfung an unberührten
+Prompts.
+
+**Kandidat "S":** Beim ersten Nutzer-Prompt einer Session (keine vorherige
+Assistant-Antwort) wird unabhängig vom Work-Signal-Gate gesucht
+(trivial/too_short/Automaten bleiben still) und V1 geliefert (normale Suche +
+Projekt-Partition). Fortsetzungen bleiben wie v10.
+
+**Testmenge H:** alle Korpus-Prompts, die in Runde 1/2 NICHT in der
+Stichprobe waren, erster Prompt der Session, Gate ∈ {pass, no_work_signal},
+≥ 40 Zeichen — Stand 28.09.: 46 Prompts (alle `no_work_signal`, d. h. der
+Hook schweigt heute bei ihnen). Neue Paare bewertet derselbe Judge mit
+demselben Brief.
+
+**Kriterium auf H:** useful_rate(S) ≥ useful_rate(V0) + 10 pp **und**
+noise_rate(S) ≤ useful_rate(S) (hilfreiche Feuerungen mindestens so häufig wie
+reine Rausch-Feuerungen). V0 = normale Suche ohne Projekt-Partition auf
+denselben Prompts. Bekannte Grenze: n = 46, 10 pp ≈ 5 Prompts.
+
+### Ergebnis Runde 3
+V0 useful 9 % / noise 26 %, S useful 26 % / noise 20 % — **bestanden**, als
+v11 umgesetzt (NOTES Befund 14).
+
 ## Danach
 
 - Sieger per TDD in den Hook, Telemetrie v11, Live-Beleg der Payload-Felder

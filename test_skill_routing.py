@@ -180,7 +180,7 @@ class TestSkillRun:
 
     def test_schema_version_bumped(self, tmp_path):
         pp.run({"prompt": WORKFLOW_PROMPT, "session_id": "v8d"}, **self._kw(tmp_path))
-        assert self._last_event(tmp_path)["v"] == 10
+        assert self._last_event(tmp_path)["v"] == 11
 
 
 class TestNoDeadSkillReferences:

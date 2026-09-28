@@ -57,7 +57,7 @@ DEFAULT_WINDOW_S = 900.0     # 15 Min, gleiche Konvention wie eval_compliance
 # anderer Nenner als v9). Filter ist v >= min_version: für die reine v9-Ära
 # NICHT --min-version 9 nehmen (mischt v10 mit ein), sondern die Zahlen aus
 # NOTES Befund 12. skill_hint existiert erst ab Schema v8.
-DEFAULT_MIN_VERSION = 10
+DEFAULT_MIN_VERSION = 11  # v11 = Session-Start-Projektkarte (mehr Feuerungen)
 
 SKILL_CALL_RE = re.compile(r'"skill":"([^"]+)"')
 CMD_NAME_RE = re.compile(r"<command-name>/?([A-Za-z0-9_:-]+)</command-name>")

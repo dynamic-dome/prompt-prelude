@@ -89,6 +89,20 @@ def stratified_sample(entries, n_pass, n_nws, seed):
     return pick(passed, n_pass) + pick(nws, n_nws)
 
 
+def holdout_session_starts(entries, used_pids):
+    """Runde 3 (vorregistriert): unberührte erste Prompts einer Session,
+    Gate pass/no_work_signal, >= NWS_MIN_LEN Zeichen."""
+    out = []
+    for e in entries:
+        if e.get("pid") in used_pids or e.get("prev_assistant"):
+            continue
+        prompt = e.get("prompt", "")
+        gate = gate_of(prompt)
+        if gate in ("pass", "no_work_signal") and len(prompt) >= NWS_MIN_LEN:
+            out.append(dict(e, gate=gate))
+    return out
+
+
 def run_replay(entries, variants, search_fn):
     """-> {variant: [{pid, gate, terms, slugs, search_ok, items}]}.
     search_fn(terms) -> results-Liste oder None; Ergebnisse je Query gecacht."""
@@ -129,10 +143,21 @@ def main(argv=None):
     ap.add_argument("--n-pass", type=int, default=140)
     ap.add_argument("--n-nws", type=int, default=60)
     ap.add_argument("--seed", type=int, default=12)
+    ap.add_argument("--holdout-starts", action="store_true",
+                    help="Runde 3: unberührte Session-Anfänge, V0+V1, nach data/runs_holdout")
     args = ap.parse_args(argv)
     entries = [json.loads(l) for l in open(args.corpus, encoding="utf-8") if l.strip()]
-    sample = stratified_sample(entries, args.n_pass, args.n_nws, args.seed)
-    runs = run_replay(sample, VARIANTS, daemon_search)
+    variants = VARIANTS
+    if args.holdout_starts:
+        used = {json.loads(l)["pid"] for l in open(here / "data" / "runs" / "V0.jsonl",
+                                                    encoding="utf-8") if l.strip()}
+        sample = holdout_session_starts(entries, used)
+        variants = {k: VARIANTS[k] for k in ("V0", "V1")}
+        if args.out_dir == str(here / "data" / "runs"):
+            args.out_dir = str(here / "data" / "runs_holdout")
+    else:
+        sample = stratified_sample(entries, args.n_pass, args.n_nws, args.seed)
+    runs = run_replay(sample, variants, daemon_search)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     for name, rows in runs.items():

@@ -31,6 +31,14 @@ Phase 2 an ihre Lifecycle-Punkte um: `docs/2026-08-04-vorgehen-advisory-pivot.md
   übersprungen. Live-Befund 2026-07-02: Subagent-Callbacks produzierten
   Fehl-Routings (ui-frontend auf Telemetrie-Reports) und verzerrten die
   H4-Compliance-Messung. `<pasted_content>` bleibt bewusst User-Intent.
+- **Session-Start-Projektkarte (v11):** Beim ersten Prompt einer Session (das
+  Transkript enthält noch keine Assistant-Antwort) wird ab 40 Zeichen auch
+  ohne Work-Signal gesucht, und zusätzlich zur normalen Suche kommen bis zu
+  2 Treffer des aktuellen Projekts (Slug aus `cwd`, zweite `/search` mit
+  Projektname) **mit Inhalt** in den Block `PROJEKT-KONTEXT <slug>`.
+  Validiert an 46 unberührten Session-Anfängen (Befund 14): hilfreiche
+  Prompts 9 % → 26 %, reines Rauschen 26 % → 20 %. Bei Fortsetzungen bleibt
+  alles wie v10 (dort brachte die Projekt-Partition nur +5 pp).
 - **Headless-Läufe (v10):** `CLAUDE_CODE_ENTRYPOINT` beginnt mit `sdk`
   (`claude -p` = `sdk-cli`, Agent-SDK = `sdk-py`/`sdk-ts`) → `skip: "headless"`.
   Befund 12: v9 injizierte 37× Material in DCO-Headless-Digests. Fehlt die
@@ -189,7 +197,11 @@ Hook (nicht) gefeuert. Auswerten, um Gate-Fehlentscheidungen zu finden
 
 `prompt_prelude.jsonl` (Haupt-Telemetrie): pro Prompt ein Event mit
 skip-Grund ODER `fired`-Routing. Auditierbare Felder pro Event:
-- `v` (Schema-Version, aktuell 10 = Automaten-Filter: Skip `headless`,
+- `v` (Schema-Version, aktuell 11 = Session-Start-Projektkarte: Feld
+  `session_start` auf post-classify-Events, `project`/`project_count`/
+  `project_source`/`project_slugs` bei fired und no_material — mehr
+  Feuerungen am Session-Anfang, nicht mit v10 mischen;
+  10 = Automaten-Filter: Skip `headless`,
   `<cross-session-message` als machine_prompt, Debug-Skill-Zeile raus, Feld
   `entrypoint` — fired-Population ohne Automaten, nicht mit v9 mischen;
   9 = Advisory-Pivot: neuer Skip `no_material`

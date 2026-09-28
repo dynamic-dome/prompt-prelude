@@ -365,9 +365,12 @@ class TestTelemetry:
         # v10 = Automaten-Filter (2026-09-28): headless-Skip, cross-session-
         # message als machine_prompt, Debug-Skill-Zeile raus — fired-Population
         # ohne Automaten, NICHT mit v9 mischen.
+        # v11 = Session-Start-Projektkarte (2026-09-28): erster Prompt einer
+        # Session umgeht das Work-Signal-Gate — fired-Population wächst, NICHT
+        # mit v10 mischen.
         # Dieser Test ist absichtlich hart gepinnt — er zwingt dazu, bei jedem
         # Bump zu entscheiden, ob Auswertungen den Schnitt überspringen dürfen.
-        assert ev["v"] == pp.TELEMETRY_SCHEMA_VERSION == 10
+        assert ev["v"] == pp.TELEMETRY_SCHEMA_VERSION == 11
 
 
 class TestExtractQuery:

@@ -83,6 +83,21 @@ class TestGateAndSample:
         assert sum(1 for e in s1 if e["gate"] == "no_work_signal") == 3
 
 
+class TestHoldoutSessionStarts:
+    def test_only_untouched_first_prompts_with_substance(self):
+        long_nws = "hört sich gut an aber die farbe passt noch nicht so ganz "
+        entries = [
+            {"pid": "used", "prompt": long_nws + "1", "prev_assistant": ""},
+            {"pid": "start", "prompt": long_nws + "2", "prev_assistant": ""},
+            {"pid": "cont", "prompt": long_nws + "3", "prev_assistant": "vorher"},
+            {"pid": "short", "prompt": "ok", "prev_assistant": ""},
+            {"pid": "work", "prompt": "baue einen neuen parser für die telemetrie", "prev_assistant": ""},
+        ]
+        out = rr.holdout_session_starts(entries, used_pids={"used"})
+        assert [e["pid"] for e in out] == ["start", "work"]
+        assert {e["gate"] for e in out} == {"no_work_signal", "pass"}
+
+
 class TestRunReplay:
     def test_variants_share_search_cache(self):
         calls = []

@@ -311,8 +311,11 @@ def skill_names(lines):
     return found
 
 
+PROJECT_SNIPPET_CAP = 200
+
+
 def compose_context(domain, phase, routing_lines, capabilities=None, query=None,
-                    mentors=None, skills=None):
+                    mentors=None, skills=None, project=None, project_slug=None):
     """Baut den <prompt_prelude>-Block. Leer-String, wenn nichts Relevantes.
 
     v9 (Advisory-Pivot): der Block ist ein MATERIAL-Kanal. Ohne konkreten
@@ -323,8 +326,11 @@ def compose_context(domain, phase, routing_lines, capabilities=None, query=None,
     `query` liefert den fertigen memory_search_tool-Einstieg zum Vertiefen.
 
     Die ECHO-Zeile (erzwungene erste Antwortzeile) war Rollout-Verifikation und
-    ist nur noch mit Env PRELUDE_ECHO=1 aktiv (Default: aus)."""
-    if not capabilities and not mentors and not skills:
+    ist nur noch mit Env PRELUDE_ECHO=1 aktiv (Default: aus).
+
+    v11: `project` (Session-Start-Projektkarte) wird MIT Inhalt eingespielt —
+    Verweise werden kaum nachgelesen (Befund 7), der Inhalt ist sofort nutzbar."""
+    if not capabilities and not mentors and not skills and not project:
         return ""
     dom = domain or "-"
     parts = []
@@ -354,13 +360,22 @@ def compose_context(domain, phase, routing_lines, capabilities=None, query=None,
         parts.append("VORAB-SUCHE Frühere Fälle (bereits ausgeführt — ähnliche gelöste "
                      "Aufgaben/Session-Notes, bei Bedarf nachlesen):")
         parts.extend(f"- [{m}]" for m in mentors)
+    if project:
+        if parts and parts[-1] != "":
+            parts.append("")
+        parts.append(f"PROJEKT-KONTEXT {project_slug or '-'} (Session-Start — Learnings, "
+                     "Entscheidungen und Doku dieses Projekts, Inhalt vorab):")
+        for p in project:
+            snippet = str(p.get("snippet") or "")[:PROJECT_SNIPPET_CAP]
+            parts.append(f"- [{p.get('rid')}] {snippet}".rstrip())
     while parts and parts[-1] == "":
         parts.pop()
     body = "\n".join(parts)
     return f'<prompt_prelude phase="{phase}" domain="{dom}">\n{body}\n</prompt_prelude>'
 
 
-def build_system_message(domain, phase, caps, caps_source, mentors=None, skills=None):
+def build_system_message(domain, phase, caps, caps_source, mentors=None, skills=None,
+                         project=None):
     """Sichtbare Status-Zeile für den USER (natives systemMessage-Feld, in den
     Claude-Code-Docs 'shown to the user'). Der additionalContext geht nur in
     Claudes Kontext — DAS hier ist der einzige Kanal, den der Mensch am Schirm
@@ -375,7 +390,9 @@ def build_system_message(domain, phase, caps, caps_source, mentors=None, skills=
     s = len(skills or [])
     # skill-Segment nur bei Treffern — ohne Skill-Hint bleibt die Zeile
     # zeichengleich zum v7-Format (dieselbe Politik wie beim mentor-Segment).
-    return msg + (f" · skill={s}" if s else "")
+    msg += f" · skill={s}" if s else ""
+    p = len(project or [])
+    return msg + (f" · projekt={p}" if p else "")
 
 
 def make_output(additional_context, system_message=None):
@@ -570,7 +587,12 @@ def cleanup_state(state_dir, now, max_age_days=7):
 # <cross-session-message> als machine_prompt, Debug-Skill-Zeile entfernt; jedes
 # Event trägt `entrypoint`, sofern die Harness ihn setzt. fired-Population ohne
 # Automaten — nicht mit v9 mischen.
-TELEMETRY_SCHEMA_VERSION = 10
+# v11 = Session-Start-Projektkarte (Runde 3, Plan-Doc): erster Prompt einer
+# Session umgeht Work-Signal-/Confidence-Gate (>= 40 Zeichen) und bekommt bis
+# zu 2 Projekt-Treffer mit Inhalt; Felder session_start (post-classify),
+# project/project_count/project_source/project_slugs (fired). Andere
+# fired-Population als v10 — nicht mischen.
+TELEMETRY_SCHEMA_VERSION = 11
 
 
 def log_telemetry(record, log_path):
@@ -1118,6 +1140,76 @@ def context_terms(text, prompt_terms="", limit=CONTEXT_TERMS_LIMIT):
         return []
 
 
+# Runde 2 — Item-Gate (Plan-Doc, vorregistriert): Kosinus Prompt x Treffer-
+# Snippet über den bestehenden /classify-Endpoint (Labels = Snippets). Die
+# RRF-Scores von /search taugen nicht als Relevanz-Gate (v5-Befund), die
+# Einbettungs-Ähnlichkeit schon eher — ohne Daemon-Änderung.
+# v11 — Session-Start-Projektkarte (Runde 3, validiert an 46 unberührten
+# Session-Anfängen: useful 9 % -> 26 %, noise 26 % -> 20 %). Am Anfang fehlt
+# Claude der Projektkontext; bei Fortsetzungen brachte die Projekt-Partition
+# nur +5 pp (Runde 1) und bleibt deshalb aus.
+SESSION_START_SCAN_BYTES = 2_000_000
+SESSION_START_MIN_LEN = 40   # getestete Population: >= 40 Zeichen
+_ASSISTANT_MARKER = b'"type":"assistant"'
+
+
+def is_session_start(transcript_path):
+    """True, solange das Transkript noch keine Assistant-Antwort enthält.
+    Fail-safe False bei fehlendem/unlesbarem Pfad (= Verhalten wie v10).
+    Liest höchstens SESSION_START_SCAN_BYTES (SessionStart-Anhänge stehen vorn,
+    live ~260 KB vor der ersten Antwort); größere Dateien ohne Marker gelten
+    als laufende Session. Im JSON-String escapte Marker zählen nicht."""
+    try:
+        if not transcript_path:
+            return False
+        with open(transcript_path, "rb") as fh:
+            chunk = fh.read(SESSION_START_SCAN_BYTES + 1)
+        if _ASSISTANT_MARKER in chunk:
+            return False
+        return len(chunk) <= SESSION_START_SCAN_BYTES
+    except Exception:
+        return False
+
+
+def lookup_project_card(terms, slugs, budget, exclude, http_fn=None):
+    """Projekt-Partition: zweite /search mit Projektname in der Query,
+    bis zu PROJECT_HIT_LIMIT Treffer mit Slug im record_id, ohne bereits
+    injizierte. -> ([{rid, snippet}], source)."""
+    pq = project_query(terms, slugs)
+    if not pq:
+        return [], "none"
+    results = budget.call(search_via_daemon, pq, 12, http_fn=http_fn)
+    if results is None:
+        return [], "none"
+    hits = [{"rid": str(r.get("record_id")), "snippet": _cap_text(r.get("snippet"))}
+            for r in select_project_hits(results, slugs, exclude=exclude)]
+    return hits, ("daemon" if hits else "none")
+
+
+def score_items(prompt, items, http_fn=None, timeout=None):
+    """-> {rid: cosine} für Items mit Snippet; {} ohne Vergleichbares;
+    None bei Daemon-Fehler (Aufrufer entscheidet, was dann passiert)."""
+    labels = [{"name": str(i.get("rid")), "description": str(i.get("snippet"))}
+              for i in items or [] if i.get("rid") and str(i.get("snippet") or "").strip()]
+    query = str(prompt or "").strip()[:CLASSIFY_PROMPT_CAP]
+    if not labels or not query:
+        return {}
+    try:
+        fn = http_fn or _http_post_json
+        t = timeout if timeout is not None else _daemon_timeout()
+        data = fn(_daemon_url() + "/classify", {"query": query, "labels": labels}, t)
+        return {str(s["name"]): float(s["score"]) for s in data["scores"]}
+    except Exception:
+        return None
+
+
+def gate_items(items, scores, tau):
+    """Nur Items mit Score >= tau; Items ohne Score fallen raus."""
+    scores = scores or {}
+    return [i for i in items or []
+            if scores.get(i.get("rid")) is not None and scores[i["rid"]] >= tau]
+
+
 def lookup_capabilities(terms, atlas_root, budget, http_fn=None, limit=3, daemon_ok=True):
     """Rückwärts-kompatibler Caps-Blick auf lookup_sources (3-Tupel-Kontrakt)."""
     return lookup_sources(terms, atlas_root, budget, http_fn=http_fn,
@@ -1148,6 +1240,12 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
                      decision_log_path)
         return ""
 
+    # v11: erster Prompt einer Session (noch keine Assistant-Antwort) umgeht
+    # Work-Signal- und Confidence-Gate — ab SESSION_START_MIN_LEN Zeichen, wie
+    # in Runde 3 an unberührten Session-Anfängen validiert.
+    session_start = is_session_start(payload.get("transcript_path"))
+    session_bypass = session_start and len(str(prompt).strip()) >= SESSION_START_MIN_LEN
+
     budget = budget or DaemonBudget()
 
     # Routing-Kaskade: (a) Daemon-Klassifikation, (b) Keyword-Fallback.
@@ -1174,6 +1272,7 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
         "keyword_domain": keyword_domain,
         "daemon_latency_ms": daemon_latency_ms,
         "payload_keys": payload_keys,
+        "session_start": session_start,
     }
 
     # Phase-Erkennung bleibt bewusst Keyword-basiert (nicht Daemon).
@@ -1198,7 +1297,7 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
         "matched_keywords": dom_hits + phase_hits,
     }
 
-    if not gate_signals:
+    if not gate_signals and not session_bypass:
         log_telemetry({"t": now, "skip": "no_work_signal", "session": session_id,
                        "prompt_preview": preview, **ab}, log_path)
         log_decision(decision_record("skip", "no_work_signal", now=now,
@@ -1207,7 +1306,7 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
                                      work_signals=gate_signals), decision_log_path)
         return make_skip_status("no_work_signal", domain, phase)
 
-    if confidence < PRECISION_CONFIDENCE_THRESHOLD:
+    if confidence < PRECISION_CONFIDENCE_THRESHOLD and not session_bypass:
         log_telemetry({"t": now, "skip": "low_domain_confidence", "session": session_id,
                        "prompt_preview": preview, "confidence": round(confidence, 3), **ab}, log_path)
         log_decision(decision_record("skip", "low_domain_confidence", now=now,
@@ -1245,19 +1344,30 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
         daemon_ok=daemon_scores is not None)
     skill_lines = build_skill_routing(domain, phase, prompt)
 
+    # v11: Session-Start-Projektkarte (nur am Anfang, nur mit Projekt-Slug,
+    # nur bei erreichbarem Daemon — kein SQLite-Fallback für diese Partition).
+    project, project_source = [], "none"
+    slugs = project_slugs(payload.get("cwd")) if session_start else []
+    if slugs and daemon_scores is not None:
+        injected = {str(h).split(" — ", 1)[0] for h in list(caps) + list(mentors)}
+        project, project_source = lookup_project_card(terms, slugs, budget, injected,
+                                                      http_fn=http_fn)
+
     # v9-Kern (Befund 10): kein Material -> kein Feuer. Caps, Mentoren oder ein
     # Skill-Hint müssen vorliegen; die Planungs-/Rahmenzeilen allein sind
     # generischer Text und verbrauchen nur Cry-Wolf-Budget (52 % der
     # v8-Feuerungen). Kein save_fired hier: ein späterer ähnlicher Prompt MIT
-    # Treffern darf feuern.
-    if not caps and not mentors and not skill_lines:
+    # Treffern darf feuern. v11: Projekt-Treffer zählen als Material.
+    if not caps and not mentors and not skill_lines and not project:
         # caps_source/mentor_source bleiben am Skip-Event: die Auswertung muss
         # "kein Material vorhanden" von "Quellen waren down" trennen können.
         log_telemetry({"t": now, "skip": "no_material", "session": session_id,
                        "prompt_preview": preview, "query": terms,
                        "caps_raw_count": caps_raw_count,
                        "caps_source": caps_source,
-                       "mentor_source": mentor_source, **ab}, log_path)
+                       "mentor_source": mentor_source,
+                       "project_source": project_source, "project_slugs": slugs,
+                       **ab}, log_path)
         log_decision(decision_record("skip", "no_material", now=now, session_id=session_id,
                                      prompt_preview=preview, classification=classification,
                                      work_signals=gate_signals), decision_log_path)
@@ -1267,10 +1377,11 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
     # (Live-Smoke 2026-07-07: memory_search_tool("weiter") auf Junk-Prompt).
     ctx = compose_context(domain, phase, routing, caps,
                           query=terms if len(terms.split()) >= 2 else None,
-                          mentors=mentors, skills=skill_lines)
+                          mentors=mentors, skills=skill_lines,
+                          project=project, project_slug=slugs[0] if slugs else None)
     # systemMessage nur beim tatsächlichen Feuern (Q1: sichtbare Zeile nur wenn feuert).
     sys_msg = build_system_message(domain, phase, caps, caps_source, mentors,
-                                   skill_lines) if ctx else None
+                                   skill_lines, project) if ctx else None
     out = make_output(ctx, system_message=sys_msg)
 
     if out:
@@ -1292,6 +1403,11 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
                        # genannte Skill danach wirklich aufgerufen wurde.
                        "skill_hint": skill_names(skill_lines),
                        "skill_hint_count": len(skill_lines),
+                       # v11: Session-Start-Projektkarte
+                       "project": [p["rid"] for p in project],
+                       "project_count": len(project),
+                       "project_source": project_source,
+                       "project_slugs": slugs,
                        "rearmed": rearmed, "prompt_preview": preview,
                        "matched_keywords": dom_hits + phase_hits,
                        "session": session_id, **ab}, log_path)

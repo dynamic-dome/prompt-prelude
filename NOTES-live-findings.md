@@ -299,6 +299,38 @@ pro Item, nicht bei der Query.
 `<agent-message` (Subagent-Hand-back) bekam Material injiziert → Marker
 ergänzt, beim nächsten Hand-back live als `machine_prompt` übersprungen.
 
+## Befund 14 (2026-09-28): Relevanz-Filter scheitern, die Session-Start-Projektkarte besteht → v11
+Zwei weitere vorregistrierte Runden (Plan-Doc, Runde 2 und 3).
+
+**Runde 2 — Item-Gate per Kosinus (Prompt × Treffer-Snippet über `/classify`):
+nicht bestanden.** τ = 0,30 auf Hälfte A gewählt (Rückfall-Wahl: kein τ
+halbierte dort das Rauschen), auf Hälfte B noise 30 % vs. V0 28 %.
+Explorativ: kein billiges Signal trennt hilfreich von irrelevant — AUC
+Kosinus 0,62, Wort-Overlap 0,65, Rang 0,41; nur innerhalb der Caps Kosinus
+0,75. Ob ein Treffer hilft, hängt am Gesprächsstand, nicht an Ähnlichkeit.
+
+**Runde 3 — Session-Start-Projektkarte: bestanden.** Hypothese aus Runde 1
+(explorativ: V1 am Session-Anfang 29 % vs. 15 %), geprüft an 46 unberührten
+ersten Session-Prompts (alle `no_work_signal` — v10 schweigt dort),
+60 neue Paare, derselbe Judge (60/60 gültig, nachgezählt):
+V0 useful 9 % / noise 26 % → S useful **26 %** / noise **20 %**.
+Kriterium (≥ +10 pp und noise ≤ useful) erfüllt → **v11 umgesetzt**:
+erster Prompt einer Session (keine Assistant-Antwort im Transkript, ≥ 40
+Zeichen) umgeht Work-Signal- und Confidence-Gate und bekommt bis zu 2
+Projekt-Treffer mit Inhalt. Fortsetzungen unverändert.
+
+**E2E (isolierte Kopie, echter Daemon):** DCO-Session-Start feuert mit
+Projektkarte (359 ms inkl. Python-Start, Daemon 56 ms), Fortsetzung bleibt
+still. Sichtbare Grenzen: der mitgelieferte Caps-Treffer war unpassend (passt
+zu 18 % Caps-Präzision), die Projektkarte eher allgemein (Entity-Seite statt
+Scheduler-Learning); ein Prompt zu prompt-prelude fand gar keine
+Projekt-Treffer, weil der Projektname in allgemeinen Query-Wörtern untergeht.
+
+**Nächste Kandidaten (brauchen neue, unberührte Prompts):** Projekt-Suche per
+`scope`-Filter des Daemons statt Projektname in der Query; Caps-Partition am
+Session-Anfang weglassen oder per Kosinus (Caps-intern AUC 0,75) filtern.
+Neue Prompts wachsen täglich in den Korpus (`python -m replay.corpus`).
+
 ## Status (aktualisiert 2026-07-02 abend, Iteration 1)
 - Befund 1: `domain+phase`-Key + RAG-Bezug-Re-Arm umgesetzt (frühere Session).
   **Offen:** Re-Arm nach N Prompts (State-Format `set` → `{key: fired_at}`) —
