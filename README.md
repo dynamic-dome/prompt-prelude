@@ -247,6 +247,7 @@ python -m replay.run               # Varianten V0-V3 gegen den Daemon fahren
 python -m replay.judge prepare     # neue (Prompt, Record)-Paare als Batches
 #   -> je Batch EIN Sonnet-Subagent mit replay/JUDGE_BRIEF.md, schreibt verdicts_NN.jsonl
 python -m replay.judge score       # Metriken je Variante + Kriterium
+python -m replay.uptake            # Nutzung: greift Claude eingespielte Treffer auf? (Befund 15)
 ```
 
 - **Korpus:** echte, getippte Prompts interaktiver Sessions in Hook-Sicht

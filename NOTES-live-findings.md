@@ -331,6 +331,35 @@ Projekt-Treffer, weil der Projektname in allgemeinen Query-Wörtern untergeht.
 Session-Anfang weglassen oder per Kosinus (Caps-intern AUC 0,75) filtern.
 Neue Prompts wachsen täglich in den Korpus (`python -m replay.corpus`).
 
+## Befund 15 (2026-09-28): Eingespieltes Material wird kaum genutzt — 4 von 227 Treffern
+Nutzungsmessung (`python -m replay.uptake`, Idee 12) über alle Transkripte der
+letzten 30 Tage: Die Injektion steht wörtlich im Transkript (Anhang
+`hook_additional_context` direkt nach dem Prompt), also ist pro Turn exakt
+bekannt, was eingespielt wurde. 79 Turns mit Injektion, 227 Treffer (154 Caps,
+73 Mentoren). Kontrolle: nicht eingespielte Nachbarn derselben Suche (n=29).
+
+**Semantik-Falle, vor der Auswertung korrigiert:** Die erste Definition
+("ID oder Kurzform in Antwort/Tool-Input") ergab 7 % — Einzelsichtung zeigte,
+dass 13 von 16 Treffern Projektnamen in Pfaden (`cd …/job-radar`), MCP-Tool-
+Namen (`mcp__agent-memory-atlas__…`) oder Tabellen waren. Geschärft: Atlas-
+Karten zählen nur mit voller ID, Skills nur per Skill-Aufruf; Wiki-Notes,
+Learnings und Docs über ihre Kurzform (L140, Dateiname).
+
+**Ergebnis:** 4 von 227 Treffern nachweislich genutzt (1,8 %; Kontrolle 0 %):
+zwei eingespielte Wiki-Session-Notes wurden per `cat`/`sed` gelesen, zwei
+Skills aufgerufen (`frontend-design`, `stackatlas-content-studio` — hier ist
+offen, ob Claude sie auch ohne Hinweis gewählt hätte). Pro Feuerung: 4 von 79.
+Das ist eine Untergrenze — stilles Befolgen eines kurzen Hinweises sieht die
+Messung nicht; das Inhalts-Echo-Signal ist bei 60-Zeichen-Hints unbrauchbar
+(Kontrolle höher als Treatment, winziges n).
+
+**Einordnung mit Befund 13:** Caps sind der schwächste Teil — 18 % Präzision,
+~1 % Nutzung. Explorativ auf den Judge-Daten: ohne Caps sinkt bei
+Fortsetzungen noise 24 % → 4 %, useful 15 % → 7 % (Treffsicherheit 33 % → 50 %).
+Owner-Entscheid offen: Caps bei Fortsetzungen abschalten? v11-Projektkarten
+(mit Inhalt statt Verweis) sind hier noch nicht enthalten — ihr Nutzungstest
+braucht echte v11-Session-Starts (#9488).
+
 ## Status (aktualisiert 2026-07-02 abend, Iteration 1)
 - Befund 1: `domain+phase`-Key + RAG-Bezug-Re-Arm umgesetzt (frühere Session).
   **Offen:** Re-Arm nach N Prompts (State-Format `set` → `{key: fired_at}`) —
