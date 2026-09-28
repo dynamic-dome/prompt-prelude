@@ -27,7 +27,24 @@ TRIVIAL = {"ja", "nein", "ok", "okay", "danke", "bitte", "weiter", "stop",
 # H4-Compliance-Messung (Live-Befund 2026-07-02). Nur Prompt-ANFANG matchen —
 # User-Text, der Tags bloß enthält, bleibt normal.
 MACHINE_PROMPT_MARKERS = ("<task-notification>", "<system-reminder>",
-                          "<local-command-stdout>", "<command-name>")
+                          "<local-command-stdout>", "<command-name>",
+                          # v10 (Befund 12): Nachrichten anderer Claude-Sessions;
+                          # der Tag trägt Attribute (from="uds:…") -> ohne ">".
+                          "<cross-session-message")
+
+# v10 (Befund 12): Headless-Läufe (`claude -p` = sdk-cli, Agent-SDK = sdk-py/
+# sdk-ts) sind Automaten — v9 injizierte 37× Material in DCO-Digests. Claude
+# Code setzt CLAUDE_CODE_ENTRYPOINT, Hooks erben die Env. Fehlt die Variable,
+# gilt der Lauf als interaktiv (bisheriges Verhalten, nicht still verstummen).
+HEADLESS_ENTRYPOINT_PREFIX = "sdk"
+
+
+def current_entrypoint():
+    return os.environ.get("CLAUDE_CODE_ENTRYPOINT") or None
+
+
+def is_headless(entrypoint):
+    return bool(entrypoint) and entrypoint.lower().startswith(HEADLESS_ENTRYPOINT_PREFIX)
 
 
 def should_skip(prompt):
@@ -231,10 +248,11 @@ def build_rag_routing(domain, phase):
 #   sqlite-schema-guard (1/12)     -> Phase 2: PreToolUse auf pytest-Kommandos
 #   review (1/55)                  -> Phase 2: Stop-Hook-Kandidat, zurückgestellt
 #   office-hours / plan-ceo-review / brainstorming (0-8 %) -> ersatzlos raus
+# v10 (NOTES Befund 12): systematic-debugging riss die vorregistrierte Latte
+# (v9 0/8, v8 1/8 Follow) -> raus. subagent-briefing (v9 2/33 vs. 1 % Baseline)
+# besteht nur formal auf n=2; nach dem Automaten-Filter neu messen.
 # Details + Abschalt-Kriterien: docs/2026-08-04-vorgehen-advisory-pivot.md.
 SKILL_ROUTING = {
-    "debug":    'Skill("superpowers:systematic-debugging") VOR dem ersten Fix-Versuch — '
-                'erst einen reproduzierbaren Feedback-Loop bauen, dann Hypothesen testen.',
     "workflow": 'Subagenten im Spiel: Skill("subagent-briefing") für den Auftrag — '
                 'Tool, Scope und Erfolgskriterium explizit in den Brief.',
 }
@@ -545,12 +563,19 @@ def cleanup_state(state_dir, now, max_age_days=7):
 # "no_material" statt Leer-Feuern, planning zählt als Work-Signal,
 # Skill-Routing auf 2 Prompt-Zeitpunkt-Skills reduziert. Auswertungen nie
 # über Versionsgrenzen mischen (NOTES Befund 5/7/10).
-TELEMETRY_SCHEMA_VERSION = 9
+# v10 = Automaten-Filter (NOTES Befund 12): Skip "headless" (sdk-Entrypoints),
+# <cross-session-message> als machine_prompt, Debug-Skill-Zeile entfernt; jedes
+# Event trägt `entrypoint`, sofern die Harness ihn setzt. fired-Population ohne
+# Automaten — nicht mit v9 mischen.
+TELEMETRY_SCHEMA_VERSION = 10
 
 
 def log_telemetry(record, log_path):
     try:
         record.setdefault("v", TELEMETRY_SCHEMA_VERSION)
+        entrypoint = current_entrypoint()
+        if entrypoint:
+            record.setdefault("entrypoint", entrypoint)
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception:
@@ -983,7 +1008,10 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
     decision_log_path = decision_log_path or _default_decision_log_path()
     work_signals = detect_work_signals(prompt)
 
-    skip, reason = should_skip(prompt)
+    if is_headless(current_entrypoint()):
+        skip, reason = True, "headless"
+    else:
+        skip, reason = should_skip(prompt)
     if skip:
         log_telemetry({"t": now, "skip": reason, "session": session_id,
                        "prompt_preview": preview}, log_path)

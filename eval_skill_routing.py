@@ -53,10 +53,11 @@ HERE = Path(__file__).resolve().parent
 DEFAULT_TELEMETRY = HERE / "prompt_prelude.jsonl"
 DEFAULT_PROJECTS = Path.home() / ".claude" / "projects"
 DEFAULT_WINDOW_S = 900.0     # 15 Min, gleiche Konvention wie eval_compliance
-# v9 = aktuelle Ära (Advisory-Pivot: nur noch 2 routbare Skills, kein
-# Leer-Feuern — anderer Nenner als v8). Für den historischen v8-Vergleich
-# explizit --min-version 8 setzen; skill_hint existiert erst ab Schema v8.
-DEFAULT_MIN_VERSION = 9
+# v10 = aktuelle Ära (Automaten-Filter, nur noch subagent-briefing routbar —
+# anderer Nenner als v9). Filter ist v >= min_version: für die reine v9-Ära
+# NICHT --min-version 9 nehmen (mischt v10 mit ein), sondern die Zahlen aus
+# NOTES Befund 12. skill_hint existiert erst ab Schema v8.
+DEFAULT_MIN_VERSION = 10
 
 SKILL_CALL_RE = re.compile(r'"skill":"([^"]+)"')
 CMD_NAME_RE = re.compile(r"<command-name>/?([A-Za-z0-9_:-]+)</command-name>")

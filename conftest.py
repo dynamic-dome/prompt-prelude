@@ -37,6 +37,10 @@ def hermetic_default_logs(monkeypatch, tmp_path, tmp_path_factory):
     monkeypatch.setattr(_pp, "_default_state_dir", lambda: str(iso / "prelude-state"))
     monkeypatch.setenv("TRAJEKTOR_LOG", str(iso / "trajektor.jsonl"))
     monkeypatch.setenv("TRAJEKTOR_STATE_DIR", str(iso / "trajektor-state"))
+    # v10 Headless-Skip liest CLAUDE_CODE_ENTRYPOINT: läuft die Suite selbst in
+    # einem `claude -p` (sdk-cli), würde sonst jeder run()-Test still skippen.
+    # Deterministisch "interaktiv"; Headless-Tests setzen es explizit um.
+    monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
     _poison_guard("vor dem Test")
     yield
     _poison_guard("nach dem Test")

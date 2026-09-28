@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
-"""v8/v9 — Skill-Routing.
+"""v8/v9/v10 — Skill-Routing.
 
 v8 (2026-07-22) baute den Kanal als messbaren Advisory-Test. v9 (2026-08-04,
 NOTES Befund 10) zog die Konsequenz aus der Messung: es bleiben nur die zwei
 Skills, deren Handlungsmoment der Prompt-Zeitpunkt ist (subagent-briefing,
 superpowers:systematic-debugging — je 12 % Follow, einzige über Baseline).
+v10 (2026-09-28, NOTES Befund 12): systematic-debugging riss die v9-Latte
+(0/8) und ist raus; es bleibt nur subagent-briefing.
 SKILL_RULES und SKILL_PHASE_ROUTING sind leer; ihre Regeln ziehen in Phase 2
 an die richtigen Lifecycle-Punkte um (PostToolUse/PreToolUse). Diese Tests
 sichern den v9-Kontrakt: reduzierter Bestand, Deckel, Telemetrie, Guard.
@@ -15,6 +17,8 @@ import prompt_prelude as pp
 
 DEBUG_PROMPT = ("der parser wirft einen fehler beim einlesen, "
                 "bitte debugge das in src/parser.py")
+WORKFLOW_PROMPT = ("baue einen workflow mit zwei subagenten, "
+                   "die den nightly cron job überwachen")
 
 
 class TestBuildSkillRouting:
@@ -38,9 +42,12 @@ class TestBuildSkillRouting:
         assert pp.build_skill_routing("data-analysis", "planning",
                                       "ein konzept dafuer bitte") == []
 
-    def test_domain_debug_routes_systematic_debugging(self):
-        lines = pp.build_skill_routing("debug", "quiet", "irgendwas ist kaputt")
-        assert any("superpowers:systematic-debugging" in l for l in lines)
+    def test_v10_debug_domain_has_no_skill_hint(self):
+        # v10 (NOTES Befund 12): systematic-debugging riss die vorregistrierte
+        # Latte (v9 0/8, v8 1/8 Follow) -> Zeile raus. Der Skill selbst bleibt
+        # verfügbar, nur der Hook bewirbt ihn nicht mehr.
+        assert "debug" not in pp.SKILL_ROUTING
+        assert pp.build_skill_routing("debug", "quiet", "irgendwas ist kaputt") == []
 
     def test_domain_workflow_routes_subagent_briefing_only(self):
         # v9: verify-subagent-tallies (0/50 Follow) ist raus — sein Moment ist
@@ -139,17 +146,26 @@ class TestSkillRun:
         return _json.loads(raw)
 
     def test_telemetry_carries_skill_hint(self, tmp_path):
-        out = pp.run({"prompt": DEBUG_PROMPT, "session_id": "v8a"}, **self._kw(tmp_path))
+        out = pp.run({"prompt": WORKFLOW_PROMPT, "session_id": "v8a"}, **self._kw(tmp_path))
         ev = self._last_event(tmp_path)
         assert ev["fired"] is True
-        assert ev["skill_hint"] == ["superpowers:systematic-debugging"]
+        assert ev["skill_hint"] == ["subagent-briefing"]
         assert ev["skill_hint_count"] == 1
         ctx = _json.loads(out)["hookSpecificOutput"]["additionalContext"]
         assert "SKILL-ROUTING" in ctx
 
     def test_system_message_shows_skill_segment(self, tmp_path):
-        out = pp.run({"prompt": DEBUG_PROMPT, "session_id": "v8b"}, **self._kw(tmp_path))
+        out = pp.run({"prompt": WORKFLOW_PROMPT, "session_id": "v8b"}, **self._kw(tmp_path))
         assert "· skill=1" in _json.loads(out)["systemMessage"]
+
+    def test_v10_debug_prompt_without_material_stays_silent(self, tmp_path):
+        # v9 feuerte hier nur mit der Debug-Skill-Zeile (Hint-only-Feuer, in der
+        # Stichprobe u. a. auf "scheint zu funktionieren…"). Ohne Caps/Mentoren
+        # ist das seit v10 no_material: kein Kontext für den Agenten, nur die
+        # sichtbare T-31-Skip-Zeile für den User.
+        out = pp.run({"prompt": DEBUG_PROMPT, "session_id": "v10a"}, **self._kw(tmp_path))
+        assert "hookSpecificOutput" not in _json.loads(out)
+        assert self._last_event(tmp_path)["skip"] == "no_material"
 
     def test_no_skill_no_caps_skips_no_material(self, tmp_path):
         # v9-Kern: ohne Skill-Hint UND ohne Caps/Mentoren feuert nichts mehr —
@@ -163,8 +179,8 @@ class TestSkillRun:
         assert "fired" not in ev
 
     def test_schema_version_bumped(self, tmp_path):
-        pp.run({"prompt": DEBUG_PROMPT, "session_id": "v8d"}, **self._kw(tmp_path))
-        assert self._last_event(tmp_path)["v"] == 9
+        pp.run({"prompt": WORKFLOW_PROMPT, "session_id": "v8d"}, **self._kw(tmp_path))
+        assert self._last_event(tmp_path)["v"] == 10
 
 
 class TestNoDeadSkillReferences:

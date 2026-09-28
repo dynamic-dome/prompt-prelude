@@ -184,6 +184,78 @@ Referenz im Repo, README-Abschnitt trägt den Archiv-Status. Lehre: ein Hook,
 dessen Vorbedingung (Anchor) von der Fire-Rate eines anderen Hooks abhängt,
 erbt dessen Funnel — Vorbedingungen entkoppeln oder gar nicht erst bauen.
 
+## Befund 12 (2026-09-28, v9-Inventur): Material-Kanal läuft — aber ein Viertel des Feuers geht an Automaten, und der Daemon ist nach Pausen zu langsam
+Vorregistrierte 2-Wochen-Inventur, verspätet nachgeholt. Datenbasis: v9,
+04.08.–28.09., 3.540 Events (3 Smoke-Sessions ausgeschlossen), 251 fired in
+166 Sessions.
+
+**(a) Funnel** (echte Sessions, ohne `machine_prompt`): 1.427 menschliche Prompts
+→ `no_work_signal` 672 (47 %), `too_short` 438 (31 %), fired 187 (13 %),
+`no_material` 94, `trivial` 20, `deduped` 16. Von den Gate-passierten Prompts
+endet ~1/3 in `no_material` — so oft hätte v8 leer gefeuert. `no_material` ist
+echt leer, keine Quelle down (122/123 mit `caps_raw_count=12`: der Daemon
+lieferte, nur kein `atlas/`-Treffer).
+
+**(b) Skill-Routing** (`eval_skill_routing`, nur KW 36–40 auswertbar, s. Punkt 3):
+FOLLOW 2/41 = 5 % vs. Baseline 1/96 = 1 %. `subagent-briefing` 2/33 (6 %),
+`systematic-debugging` 0/8. Nach der vorregistrierten Latte (≥ 2× Baseline)
+fliegt `systematic-debugging`; `subagent-briefing` besteht formal, aber auf
+n=2 Follows — statistisch nicht entscheidbar. Owner-Entscheid offen.
+
+**(c) `eval_compliance --min-version 9`:** 17/253 = 7 % vs. Skip-Baseline 5 %
+(+2 pp; v8: 13 % vs. 8 %). Trend ohne Entscheidungsgewicht. Nebenbei:
+`no_material`-Baseline 1/124 = 1 % — ohne Material sucht der Agent auch selbst
+praktisch nie im Atlas; das Gate schneidet keine Fälle weg, in denen Atlas
+gebraucht wurde.
+
+**Neue Befunde:**
+1. **Automaten-Prompts:** 59/251 fired (24 %) gingen an automatisierte Prompts,
+   die der `machine_prompt`-Filter nicht kennt: DCO-Headless
+   (`Du bist Claude Zentrale…`, 37 fired — allein 25× die tägliche
+   Abend-Zusammenfassung, teils mit `subagent-briefing`-Hint) und
+   `<cross-session-message …>` (22 fired). Die Prelude injiziert damit Material
+   in DCO-Bot-Digests. Die Hub-Records der Top-Caps-Liste (crazy-professor,
+   session-summary, notebooklm-plugin, memory-flow) stammen großteils aus diesen
+   täglich identischen Prompts.
+2. **Daemon-Kaltstart:** 227/1.063 `/classify`-Calls (21 %) laufen ins
+   0,5-s-Timeout. Timeout-Rate nach Leerlauf seit dem letzten Call: < 10 min
+   ~7–8 %, < 1 h 26 %, ≥ 1 h 59 %. Folge: der Daemon gilt als down, `/search`
+   wird übersprungen → 88 der 95 sqlite-gespeisten fired-Events sind
+   Timeout-Fallbacks. Gerade der erste Prompt nach einer Pause (oft der
+   auftragssetzende) bekommt das schwächere Material.
+3. **Transkript-Verlust:** Claude Code löscht Transkripte nach
+   `cleanupPeriodDays` (Default 30; bei uns nirgends gesetzt). Ältestes
+   Transkript 29.08., 319 Dateien (am 22.07. wurden noch 3.866 gezählt). Alle
+   transkriptbasierten Evals verlieren täglich Daten; Befund 10 ist nicht mehr
+   reproduzierbar, v9-KW 32–35 sind schon weg (0/116 fired mit Transkript).
+4. **Relevanz-Stichprobe** (n=24 zufällig, vom Agenten subjektiv beurteilt —
+   HYPOTHESE, kein Messwert): klar relevant 3, teilweise 3, irrelevant ~11,
+   Automaten 7. Treffer mit echtem Nutzen waren v. a. Learnings mit
+   Projektbezug (z. B. DCO L140 "gepushter Code ist nicht live" auf
+   "starte den Server neu").
+5. **Work-Signal-Gate:** 424 `no_work_signal`-Skips mit ≥ 70 Zeichen
+   Preview; Stichprobe 15: ~9–10 sind erkennbar Arbeitsaufträge in Umgangs-/
+   Diktatsprache ("zieh den Bot zurück auf den Laptop", "atlas auch pushen und
+   … marketplace aktualisieren"). Hypothese: das Vokabular erkennt diktierte/
+   kolloquiale Aufträge schlecht.
+
+**Umgesetzt (v10, 2026-09-28, Owner-Entscheid):** `systematic-debugging`-Zeile
+aus `SKILL_ROUTING` entfernt (Latte gerissen). Automaten-Filter:
+`<cross-session-message` als `machine_prompt`-Marker; neuer Skip `headless`
+für `CLAUDE_CODE_ENTRYPOINT=sdk*` (generisches Harness-Signal statt
+DCO-Präfix — verifiziert an Transkripten: DCO-Digests `entrypoint=sdk-cli`,
+interaktiv `cli`); Feld `entrypoint` auf jedem Event. Telemetrie v10.
+286 Tests grün, inkl. Subprozess-E2E für die Env-Vererbung; echte
+Telemetrie per Vorher/Nachher-Snapshot unberührt. **Live-Beleg offen:** erstes
+v10-Event mit `entrypoint=sdk-cli` + `skip=headless` aus einem DCO-Lauf.
+
+**Konsequenz-Kandidaten (Owner-Entscheid offen):** Transkript-Aufbewahrung
+hochsetzen (zeitkritisch, Verlust läuft täglich) · Automaten-Filter (Präfixe +
+Env-Opt-out für Headless-Aufrufe) · Daemon warm halten oder `/classify` streichen
+(Weitblick im Pivot-Plan) · Relevanz-Eval per LLM-Judge über
+(Prompt, injiziertes Material) als Konsum-Proxy ohne Tracker-Argument-Logging ·
+Work-Signal-Vokabular gegen die 424 Skips nachkalibrieren.
+
 ## Status (aktualisiert 2026-07-02 abend, Iteration 1)
 - Befund 1: `domain+phase`-Key + RAG-Bezug-Re-Arm umgesetzt (frühere Session).
   **Offen:** Re-Arm nach N Prompts (State-Format `set` → `{key: fired_at}`) —

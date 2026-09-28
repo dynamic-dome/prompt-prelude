@@ -68,6 +68,59 @@ class TestShouldSkip:
         skip, reason = pp.should_skip("kannst du erklären was <div> im html layout macht")
         assert reason != "machine_prompt"
 
+    # --- v10 (NOTES Befund 12): Nachrichten anderer Claude-Sessions sind kein
+    # User-Intent (22 fired in v9). Der Tag trägt Attribute -> Marker ohne ">".
+    def test_cross_session_message_skips(self):
+        p = ('<cross-session-message from="uds:\\\\.\\pipe\\LOCAL\\cc-msg-0174240552fea834">\n'
+             "bitte prüfe den stand im dco und melde dich mit dem ergebnis zurück\n"
+             "</cross-session-message>")
+        assert pp.should_skip(p) == (True, "machine_prompt")
+
+    def test_pasted_content_is_user_intent(self):
+        # Vom User eingefügter Text ist Absicht, kein Automat — bleibt normal.
+        skip, reason = pp.should_skip('<pasted_content id="7a2e">\nP1 – die seite '
+                                      "veröffentlicht zu viel, bitte fixen\n</pasted_content>")
+        assert reason != "machine_prompt"
+
+
+class TestHeadless:
+    """v10 (NOTES Befund 12): Headless-Läufe (`claude -p`, Agent-SDK) sind
+    Automaten — DCO-Digests bekamen 37× Material injiziert. Claude Code setzt
+    CLAUDE_CODE_ENTRYPOINT (interaktiv `cli`, `claude -p` `sdk-cli`, SDKs
+    `sdk-py`/`sdk-ts`); Hooks erben die Env. Live-Beleg: DCO-Transkripte
+    tragen entrypoint=sdk-cli, interaktive Sessions cli."""
+
+    WORK_PROMPT = "baue ein responsive component layout für den header"
+
+    def _run(self, tmp_path):
+        log = tmp_path / "l"
+        out = pp.run({"prompt": self.WORK_PROMPT, "session_id": "s"},
+                     atlas_root="x", state_dir=str(tmp_path / "st"), log_path=str(log), now=1.0)
+        ev = _json.loads(log.read_text(encoding="utf-8").strip().splitlines()[-1])
+        return out, ev
+
+    def test_sdk_entrypoints_skip_as_headless(self, tmp_path, monkeypatch):
+        for ep in ("sdk-cli", "sdk-py", "sdk-ts"):
+            monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", ep)
+            out, ev = self._run(tmp_path)
+            assert out == "", ep
+            assert ev["skip"] == "headless", ep
+            assert ev["entrypoint"] == ep
+
+    def test_interactive_cli_is_not_headless(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
+        _out, ev = self._run(tmp_path)
+        assert ev.get("skip") != "headless"
+        assert ev["entrypoint"] == "cli"
+
+    def test_missing_entrypoint_is_not_headless(self, tmp_path, monkeypatch):
+        # Fehlt die Variable (ältere/andere Harness), bleibt das bisherige
+        # Verhalten — lieber einmal zu oft feuern als still verstummen.
+        monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+        _out, ev = self._run(tmp_path)
+        assert ev.get("skip") != "headless"
+        assert "entrypoint" not in ev
+
 
 class TestDetectDomain:
     def test_ui_prompt(self):
@@ -288,9 +341,12 @@ class TestTelemetry:
         # v8 = Skill-Routing (2026-07-22): fired-Events tragen skill_hint/-count.
         # v9 = Advisory-Pivot (2026-08-04): no_material-Skip, kein Leer-Feuern —
         # fired-Raten sind mit v8 NICHT vergleichbar (anderer Nenner).
+        # v10 = Automaten-Filter (2026-09-28): headless-Skip, cross-session-
+        # message als machine_prompt, Debug-Skill-Zeile raus — fired-Population
+        # ohne Automaten, NICHT mit v9 mischen.
         # Dieser Test ist absichtlich hart gepinnt — er zwingt dazu, bei jedem
         # Bump zu entscheiden, ob Auswertungen den Schnitt überspringen dürfen.
-        assert ev["v"] == pp.TELEMETRY_SCHEMA_VERSION == 9
+        assert ev["v"] == pp.TELEMETRY_SCHEMA_VERSION == 10
 
 
 class TestExtractQuery:
@@ -472,8 +528,11 @@ class TestPrecisionGate:
         # das Praezisions-Gate darf diese Routings nicht wieder verschlucken.
         # PRECISION_CONFIDENCE_THRESHOLD muss mit TH_ACCEPT mitziehen.
         monkeypatch.setattr(pp, "find_atlas_db", lambda root: fake_atlas_db)
+        # v10: ohne Debug-Skill-Zeile braucht das Feuern echtes Material -> ein
+        # atlas/-Treffer im /search-Ergebnis (vorher trug der Skill-Hint).
         fn = _mk_http(classify=_scores(("debug", 0.42), ("code-impl", 0.30)),
-                      search={"results": []})
+                      search={"results": [{"record_id": "atlas/skill:server-ops",
+                                           "heading": "Server Ops"}]})
         out = pp.run({"prompt": "fixe den server crash beim start", "session_id": "s"},
                      http_fn=fn, **self._kw(tmp_path))
         assert out != ""
@@ -605,12 +664,14 @@ class TestMain:
     def test_fire_prints_json_with_system_message(self, monkeypatch, tmp_path, capsys):
         # Der echte main()-stdin-Pfad muss beim Feuern gültiges JSON mit der
         # sichtbaren systemMessage drucken. v9: Feuern braucht Material — der
-        # Debug-Prompt zieht den Skill-Hint (Daemon down via conftest, kein Atlas).
+        # Workflow-Prompt zieht den Skill-Hint (Daemon down via conftest, kein
+        # Atlas). v10: vorher Debug-Prompt, dessen Skill-Zeile ist entfernt.
         import io, sys
         self._isolate(monkeypatch, tmp_path)
         monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)  # hermetisch
         monkeypatch.setattr(sys, "stdin", io.StringIO(
-            _json.dumps({"prompt": "debugge bitte den fehler beim einlesen der notiz-datei",
+            _json.dumps({"prompt": "baue einen workflow mit zwei subagenten, "
+                                   "die den nightly cron job überwachen",
                          "session_id": "m"})))
         assert pp.main() == 0
         obj = _json.loads(capsys.readouterr().out.strip())
@@ -1214,7 +1275,7 @@ class TestStdinEncodingE2E:
     # matcht die ui-frontend-Domain und die Query trägt "möchte".
     UMLAUT_PROMPT = "Ich möchte die Oberfläche gründlich überarbeiten und verschönern"
 
-    def _run_hook_subprocess(self, tmp_path, prompt):
+    def _run_hook_subprocess(self, tmp_path, prompt, extra_env=None):
         """Kopiert das Script nach tmp (State + Telemetrie landen NEBEN der
         Kopie -> vollständig isoliert) und füttert UTF-8-Bytes durch echtes
         Subprocess-stdin. Env stellt den Live-Hook nach: kein PYTHONUTF8/
@@ -1227,12 +1288,24 @@ class TestStdinEncodingE2E:
                    ATLAS_DAEMON_TIMEOUT="0.05")
         env.pop("PYTHONUTF8", None)
         env.pop("PYTHONIOENCODING", None)
+        env.update(extra_env or {})
         payload = _json.dumps({"prompt": prompt, "session_id": "e2e"}, ensure_ascii=False)
         proc = subprocess.run([_sys.executable, str(script)],
                               input=payload.encode("utf-8"),
                               capture_output=True, timeout=30, env=env,
                               cwd=str(tmp_path))
         return proc, tmp_path / "prompt_prelude.jsonl"
+
+    def test_headless_entrypoint_env_reaches_hook_process(self, tmp_path):
+        # v10: der Headless-Skip hängt an einer GEERBTEN Env-Variable — nur ein
+        # echter Subprozess beweist, dass sie über die Prozessgrenze trägt.
+        proc, log = self._run_hook_subprocess(
+            tmp_path, self.UMLAUT_PROMPT, extra_env={"CLAUDE_CODE_ENTRYPOINT": "sdk-cli"})
+        assert proc.returncode == 0
+        assert proc.stdout.decode("utf-8").strip() == ""
+        ev = _json.loads(log.read_text(encoding="utf-8").strip().splitlines()[-1])
+        assert ev["skip"] == "headless"
+        assert ev["entrypoint"] == "sdk-cli"
 
     def test_umlauts_survive_real_stdin(self, tmp_path):
         proc, log = self._run_hook_subprocess(tmp_path, self.UMLAUT_PROMPT)

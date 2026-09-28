@@ -24,11 +24,17 @@ Phase 2 an ihre Lifecycle-Punkte um: `docs/2026-08-04-vorgehen-advisory-pivot.md
   ein `no_material`-Skip verbrennt den Dedupe-Key NICHT). Der Key ist
   bewusst `domain+phase`: quiet→planning derselben Domain feuert erneut.
 - **Maschinen-Prompts:** beginnt der Prompt mit `<task-notification>`,
-  `<system-reminder>`, `<local-command-stdout>` oder `<command-name>`
-  (harness-generiert, kein User-Intent), wird mit `skip: "machine_prompt"`
+  `<system-reminder>`, `<local-command-stdout>`, `<command-name>` oder
+  (seit v10) `<cross-session-message` (harness-generiert bzw. Nachricht einer
+  anderen Claude-Session, kein User-Intent), wird mit `skip: "machine_prompt"`
   übersprungen. Live-Befund 2026-07-02: Subagent-Callbacks produzierten
   Fehl-Routings (ui-frontend auf Telemetrie-Reports) und verzerrten die
-  H4-Compliance-Messung.
+  H4-Compliance-Messung. `<pasted_content>` bleibt bewusst User-Intent.
+- **Headless-Läufe (v10):** `CLAUDE_CODE_ENTRYPOINT` beginnt mit `sdk`
+  (`claude -p` = `sdk-cli`, Agent-SDK = `sdk-py`/`sdk-ts`) → `skip: "headless"`.
+  Befund 12: v9 injizierte 37× Material in DCO-Headless-Digests. Fehlt die
+  Variable, gilt der Lauf als interaktiv. Jedes Telemetrie-Event trägt
+  `entrypoint`, sofern gesetzt.
 - **Re-Arm:** Prompts mit explizitem RAG-/Skill-Bezug ("welche skills",
   "memory_search", "capability", "fähigkeiten", …) feuern trotz Dedupe erneut.
 - **Keyword-Matching:** Wortgrenzen (`\b`), kein Substring — `ui` matcht nicht mehr
@@ -141,8 +147,11 @@ ist, werden befolgt** (subagent-briefing 12 %, systematic-debugging 12 % —
 einzige über der 6 %-Baseline). Alle anderen lagen bei 0–2 %, weil ihr Moment
 später liegt (Subagent-Report trifft ein, Review am Task-Ende, …).
 
-v9-Bestand: nur noch `SKILL_ROUTING` für `debug` (systematic-debugging) und
-`workflow` (subagent-briefing). `SKILL_RULES` und `SKILL_PHASE_ROUTING` sind
+v10-Bestand: nur noch `SKILL_ROUTING` für `workflow` (subagent-briefing).
+`debug` (systematic-debugging) ist seit v10 raus — er riss die vorregistrierte
+v9-Latte (0/8 Follow, v8 1/8; NOTES Befund 12). subagent-briefing besteht
+formal (v9 2/33 vs. 1 % Baseline), aber auf n=2 — nach dem Automaten-Filter
+neu messen. `SKILL_RULES` und `SKILL_PHASE_ROUTING` sind
 leer — sqlite-schema-guard, review, verify-subagent-tallies & Co. ziehen in
 Phase 2 an ihre Lifecycle-Punkte (PostToolUse/PreToolUse/Stop) um, siehe
 `docs/2026-08-04-vorgehen-advisory-pivot.md`. `SKILL_HINT_MAX = 2` bleibt.
@@ -154,9 +163,12 @@ Anlass konkurrieren. Tote Skills gehören ins Archiv, nicht ins Routing
 
 **Wirksamkeit messen:** `python eval_skill_routing.py` (Default jetzt
 `--min-version 9`) joint die Telemetrie mit den Claude-Code-Transkripten und
-zählt Skill-Tool **und** getippte Slash-Commands. **Vorregistrierte v9-Latte:**
-die zwei verbliebenen Skills müssen ≥ 2× Baseline halten, sonst fliegen auch
-sie (Abschalt-Kriterium im Plan-Dokument). Historischer v8-Stand: FOLLOW 11 %
+zählt Skill-Tool **und** getippte Slash-Commands (Default seit v10
+`--min-version 10`). **Vorregistrierte v9-Latte:** die zwei verbliebenen Skills
+müssen ≥ 2× Baseline halten, sonst fliegen auch sie (Abschalt-Kriterium im
+Plan-Dokument) — angewandt in Befund 12. **Achtung:** Claude Code löscht
+Transkripte nach `cleanupPeriodDays` (Default 30) — die Eval sieht nur, was
+noch da ist. Historischer v8-Stand: FOLLOW 11 %
 vs. Baseline 6 % über alle 8 damals routbaren Skills.
 
 Ein Guard-Test (`TestNoDeadSkillReferences`) verhindert, dass das Routing
@@ -176,7 +188,10 @@ Hook (nicht) gefeuert. Auswerten, um Gate-Fehlentscheidungen zu finden
 
 `prompt_prelude.jsonl` (Haupt-Telemetrie): pro Prompt ein Event mit
 skip-Grund ODER `fired`-Routing. Auditierbare Felder pro Event:
-- `v` (Schema-Version, aktuell 9 = Advisory-Pivot: neuer Skip `no_material`
+- `v` (Schema-Version, aktuell 10 = Automaten-Filter: Skip `headless`,
+  `<cross-session-message` als machine_prompt, Debug-Skill-Zeile raus, Feld
+  `entrypoint` — fired-Population ohne Automaten, nicht mit v9 mischen;
+  9 = Advisory-Pivot: neuer Skip `no_material`
   mit `caps_source`/`mentor_source`/`query`/`caps_raw_count` am Skip-Event,
   kein Leer-Feuern mehr — fired-Raten haben einen ANDEREN Nenner als v8;
   8 = Skill-Routing, neue Felder
