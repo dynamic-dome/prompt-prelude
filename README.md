@@ -39,6 +39,10 @@ Phase 2 an ihre Lifecycle-Punkte um: `docs/2026-08-04-vorgehen-advisory-pivot.md
   Validiert an 46 unberührten Session-Anfängen (Befund 14): hilfreiche
   Prompts 9 % → 26 %, reines Rauschen 26 % → 20 %. Bei Fortsetzungen bleibt
   alles wie v10 (dort brachte die Projekt-Partition nur +5 pp).
+- **Keine Caps bei Fortsetzungen (v12):** Zeigt das Transkript schon eine
+  Assistant-Antwort, werden `atlas/`-Caps nicht eingespielt (Befund 15: 18 %
+  Präzision, ~1 % Nutzung; explorativ noise 24 % → 4 %). Mentoren, Skill-Hint
+  und Session-Start bleiben; bei unbekanntem Session-Zustand alles wie v11.
 - **Headless-Läufe (v10):** `CLAUDE_CODE_ENTRYPOINT` beginnt mit `sdk`
   (`claude -p` = `sdk-cli`, Agent-SDK = `sdk-py`/`sdk-ts`) → `skip: "headless"`.
   Befund 12: v9 injizierte 37× Material in DCO-Headless-Digests. Fehlt die
@@ -197,7 +201,9 @@ Hook (nicht) gefeuert. Auswerten, um Gate-Fehlentscheidungen zu finden
 
 `prompt_prelude.jsonl` (Haupt-Telemetrie): pro Prompt ein Event mit
 skip-Grund ODER `fired`-Routing. Auditierbare Felder pro Event:
-- `v` (Schema-Version, aktuell 11 = Session-Start-Projektkarte: Feld
+- `v` (Schema-Version, aktuell 12 = Caps aus bei Fortsetzung: Feld
+  `caps_suppressed`, `caps_source="suppressed"` — nicht mit v11 mischen;
+  11 = Session-Start-Projektkarte: Feld
   `session_start` auf post-classify-Events, `project`/`project_count`/
   `project_source`/`project_slugs` bei fired und no_material — mehr
   Feuerungen am Session-Anfang, nicht mit v10 mischen;

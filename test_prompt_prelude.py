@@ -370,7 +370,7 @@ class TestTelemetry:
         # mit v10 mischen.
         # Dieser Test ist absichtlich hart gepinnt — er zwingt dazu, bei jedem
         # Bump zu entscheiden, ob Auswertungen den Schnitt überspringen dürfen.
-        assert ev["v"] == pp.TELEMETRY_SCHEMA_VERSION == 11
+        assert ev["v"] == pp.TELEMETRY_SCHEMA_VERSION == 12  # v12 = Caps aus bei Fortsetzung
 
 
 class TestExtractQuery:

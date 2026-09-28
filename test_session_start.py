@@ -82,6 +82,56 @@ class TestIsSessionStart:
         assert pp.is_session_start(str(p)) is False
 
 
+class TestSessionState:
+    def test_three_states(self, tmp_path):
+        assert pp.session_state(_transcript(tmp_path, with_assistant=False)) == "start"
+        assert pp.session_state(_transcript(tmp_path, with_assistant=True)) == "continuation"
+        assert pp.session_state("") == "unknown"
+        assert pp.session_state(str(tmp_path / "fehlt.jsonl")) == "unknown"
+
+
+class TestV12CapsOffOnContinuation:
+    """v12 (Owner-Delegation 2026-09-28, NOTES Befund 15): Caps sind die
+    schwächste Partition (18 % Präzision, ~1 % Nutzung); ohne sie sinkt bei
+    Fortsetzungen noise 24 % -> 4 %. Nur bei NACHWEISLICHER Fortsetzung —
+    Session-Start (v11-validiert) und unbekannter Zustand behalten Caps."""
+
+    # Arbeits-Signal nötig: bei Fortsetzungen gibt es keinen Gate-Bypass.
+    WORK = "debugge warum lighthouse mit der falschen chrome version startet"
+
+    def test_continuation_drops_caps_keeps_mentors(self, tmp_path):
+        out, ev = _run(tmp_path, self.WORK, _transcript(tmp_path, True))
+        assert ev["fired"] is True
+        assert ev["caps"] == [] and ev["caps_suppressed"] == 2
+        assert ev["mentor_count"] == 1
+        ctx = _json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        assert "VORAB-SUCHE Capability-RAG" not in ctx
+        assert "Frühere Fälle" in ctx
+
+    def test_continuation_with_only_caps_is_no_material(self, tmp_path):
+        global SEARCH
+        saved = SEARCH
+        SEARCH = {"results": [r for r in saved["results"]
+                              if r["record_id"].startswith("atlas/")]}
+        try:
+            out, ev = _run(tmp_path, self.WORK, _transcript(tmp_path, True))
+        finally:
+            SEARCH = saved
+        assert ev["skip"] == "no_material" and ev["caps_suppressed"] == 2
+
+    def test_session_start_keeps_caps(self, tmp_path):
+        _out, ev = _run(tmp_path, NWS_PROMPT, _transcript(tmp_path, False))
+        assert ev["caps_count"] == 2 and ev["caps_suppressed"] == 0
+
+    def test_unknown_state_keeps_caps(self, tmp_path):
+        log = tmp_path / "l.jsonl"
+        pp.run({"prompt": self.WORK, "session_id": "s", "cwd": EVOLAB},
+               atlas_root=str(tmp_path / "no-atlas"), state_dir=str(tmp_path / "st"),
+               log_path=str(log), now=1.0, http_fn=_http())
+        ev = _json.loads(log.read_text(encoding="utf-8").strip().splitlines()[-1])
+        assert ev["caps_count"] == 2 and ev["caps_suppressed"] == 0
+
+
 class TestSessionStartRun:
     def test_first_prompt_bypasses_work_signal_gate_and_adds_project_card(self, tmp_path):
         calls = []
@@ -137,6 +187,6 @@ class TestSessionStartRun:
         assert ev["skip"] == "no_material" and ev["session_start"] is True
         assert ev["project_slugs"] == ["evolab"] and ev["project_source"] == "none"
 
-    def test_schema_v11(self, tmp_path):
+    def test_schema_v12(self, tmp_path):
         _out, ev = _run(tmp_path, NWS_PROMPT, _transcript(tmp_path, False))
-        assert ev["v"] == 11
+        assert ev["v"] == 12

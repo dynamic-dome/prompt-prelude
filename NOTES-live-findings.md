@@ -356,9 +356,18 @@ Messung nicht; das Inhalts-Echo-Signal ist bei 60-Zeichen-Hints unbrauchbar
 **Einordnung mit Befund 13:** Caps sind der schwächste Teil — 18 % Präzision,
 ~1 % Nutzung. Explorativ auf den Judge-Daten: ohne Caps sinkt bei
 Fortsetzungen noise 24 % → 4 %, useful 15 % → 7 % (Treffsicherheit 33 % → 50 %).
-Owner-Entscheid offen: Caps bei Fortsetzungen abschalten? v11-Projektkarten
-(mit Inhalt statt Verweis) sind hier noch nicht enthalten — ihr Nutzungstest
-braucht echte v11-Session-Starts (#9488).
+v11-Projektkarten (mit Inhalt statt Verweis) sind hier noch nicht enthalten —
+ihr Nutzungstest braucht echte v11-Session-Starts (#9488).
+
+**Umgesetzt als v12 (Owner-Delegation 2026-09-28: "triff du die
+Entscheidung"):** Caps aus bei NACHWEISLICHER Fortsetzung (Transkript enthält
+schon eine Assistant-Antwort); Session-Start (so validiert) und unbekannter
+Zustand behalten sie. Feld `caps_suppressed`. Live-Messlatte: Anteil
+`no_material` bei Fortsetzungen steigt, Rauschen sinkt — Nachmessung mit
+Judge auf neuen Fortsetzungs-Prompts in Runde 4 (#9489). E2E (isolierte Kopie,
+echter Daemon): 2 Caps unterdrückt, ohne Mentoren still. Nebenbefund:
+Gesamtlaufzeit schwankte 0,4–2,7 s bei Daemon 50–80 ms (Prozessstart/Scanner
+auf frischer Temp-Kopie vermutet) — Hook-Timeout ist 2 s, Live-Laufzeit prüfen.
 
 ## Status (aktualisiert 2026-07-02 abend, Iteration 1)
 - Befund 1: `domain+phase`-Key + RAG-Bezug-Re-Arm umgesetzt (frühere Session).

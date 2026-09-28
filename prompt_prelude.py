@@ -592,7 +592,10 @@ def cleanup_state(state_dir, now, max_age_days=7):
 # zu 2 Projekt-Treffer mit Inhalt; Felder session_start (post-classify),
 # project/project_count/project_source/project_slugs (fired). Andere
 # fired-Population als v10 — nicht mischen.
-TELEMETRY_SCHEMA_VERSION = 11
+# v12 = Caps aus bei nachweislicher Fortsetzung (Befund 15): Feld
+# caps_suppressed (fired + no_material), caps_source "suppressed"; mehr
+# no_material-Skips bei Fortsetzungen — nicht mit v11 mischen.
+TELEMETRY_SCHEMA_VERSION = 12
 
 
 def log_telemetry(record, log_path):
@@ -1153,22 +1156,27 @@ SESSION_START_MIN_LEN = 40   # getestete Population: >= 40 Zeichen
 _ASSISTANT_MARKER = b'"type":"assistant"'
 
 
-def is_session_start(transcript_path):
-    """True, solange das Transkript noch keine Assistant-Antwort enthält.
-    Fail-safe False bei fehlendem/unlesbarem Pfad (= Verhalten wie v10).
-    Liest höchstens SESSION_START_SCAN_BYTES (SessionStart-Anhänge stehen vorn,
-    live ~260 KB vor der ersten Antwort); größere Dateien ohne Marker gelten
-    als laufende Session. Im JSON-String escapte Marker zählen nicht."""
+def session_state(transcript_path):
+    """"start" (noch keine Assistant-Antwort im Transkript), "continuation"
+    (Antwort vorhanden bzw. > SESSION_START_SCAN_BYTES ohne Marker) oder
+    "unknown" (Pfad fehlt/unlesbar). Liest höchstens SESSION_START_SCAN_BYTES
+    (SessionStart-Anhänge stehen vorn, live ~260 KB vor der ersten Antwort).
+    Im JSON-String escapte Marker zählen nicht."""
     try:
         if not transcript_path:
-            return False
+            return "unknown"
         with open(transcript_path, "rb") as fh:
             chunk = fh.read(SESSION_START_SCAN_BYTES + 1)
-        if _ASSISTANT_MARKER in chunk:
-            return False
-        return len(chunk) <= SESSION_START_SCAN_BYTES
+        if _ASSISTANT_MARKER in chunk or len(chunk) > SESSION_START_SCAN_BYTES:
+            return "continuation"
+        return "start"
     except Exception:
-        return False
+        return "unknown"
+
+
+def is_session_start(transcript_path):
+    """Fail-safe False bei unbekanntem Zustand (= Verhalten wie v10)."""
+    return session_state(transcript_path) == "start"
 
 
 def lookup_project_card(terms, slugs, budget, exclude, http_fn=None):
@@ -1243,7 +1251,8 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
     # v11: erster Prompt einer Session (noch keine Assistant-Antwort) umgeht
     # Work-Signal- und Confidence-Gate — ab SESSION_START_MIN_LEN Zeichen, wie
     # in Runde 3 an unberührten Session-Anfängen validiert.
-    session_start = is_session_start(payload.get("transcript_path"))
+    state = session_state(payload.get("transcript_path"))
+    session_start = state == "start"
     session_bypass = session_start and len(str(prompt).strip()) >= SESSION_START_MIN_LEN
 
     budget = budget or DaemonBudget()
@@ -1344,6 +1353,14 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
         daemon_ok=daemon_scores is not None)
     skill_lines = build_skill_routing(domain, phase, prompt)
 
+    # v12 (NOTES Befund 15, Owner-Delegation 2026-09-28): Caps sind die
+    # schwächste Partition (18 % Präzision, ~1 % Nutzung) — bei NACHWEISLICHER
+    # Fortsetzung raus (explorativ: noise 24 % -> 4 %, useful 15 % -> 7 %).
+    # Session-Start (so validiert) und unbekannter Zustand behalten sie.
+    caps_suppressed = 0
+    if state == "continuation" and caps:
+        caps_suppressed, caps, caps_source = len(caps), [], "suppressed"
+
     # v11: Session-Start-Projektkarte (nur am Anfang, nur mit Projekt-Slug,
     # nur bei erreichbarem Daemon — kein SQLite-Fallback für diese Partition).
     project, project_source = [], "none"
@@ -1367,6 +1384,7 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
                        "caps_source": caps_source,
                        "mentor_source": mentor_source,
                        "project_source": project_source, "project_slugs": slugs,
+                       "caps_suppressed": caps_suppressed,
                        **ab}, log_path)
         log_decision(decision_record("skip", "no_material", now=now, session_id=session_id,
                                      prompt_preview=preview, classification=classification,
@@ -1408,6 +1426,9 @@ def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=N
                        "project_count": len(project),
                        "project_source": project_source,
                        "project_slugs": slugs,
+                       # v12: Caps, die bei Fortsetzungen gefunden, aber nicht
+                       # eingespielt wurden
+                       "caps_suppressed": caps_suppressed,
                        "rearmed": rearmed, "prompt_preview": preview,
                        "matched_keywords": dom_hits + phase_hits,
                        "session": session_id, **ab}, log_path)
