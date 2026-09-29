@@ -5,7 +5,7 @@ Test trifft den echten Daemon."""
 from replay import run as rr
 
 ENTRY = {"pid": "p1", "prompt": "baue den lighthouse runner für das dashboard um",
-         "cwd": r"C:\Users\domes\AI\evolab",
+         "cwd": r"C:\Users\alice\AI\evolab",
          "prev_assistant": "Der Mutator ist fertig. Der Mutator schreibt Kandidaten, "
                            "Lighthouse bewertet die Kandidaten."}
 

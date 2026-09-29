@@ -7,25 +7,25 @@ import prompt_prelude as pp
 
 class TestProjectSlugs:
     def test_nested_project_most_specific_first(self):
-        assert pp.project_slugs(r"C:\Users\domes\AI\Hooks-bau\prompt-prelude") == \
+        assert pp.project_slugs(r"C:\Users\alice\AI\Hooks-bau\prompt-prelude") == \
             ["prompt-prelude", "hooks-bau"]
 
     def test_underscores_normalized(self):
-        assert pp.project_slugs(r"C:\Users\domes\dynamic_central_orchestrator") == \
+        assert pp.project_slugs(r"C:\Users\alice\dynamic_central_orchestrator") == \
             ["dynamic-central-orchestrator"]
 
     def test_generic_roots_yield_nothing(self):
         # Home, AI-Workspace, Desktop sind Sammelordner, kein Projekt.
-        for cwd in (r"C:\Users\domes", r"C:\Users\domes\AI", r"C:\Users\domes\Desktop",
-                    r"C:\Users\domes\Desktop\Claude-Projekte"):
+        for cwd in (r"C:\Users\alice", r"C:\Users\alice\AI", r"C:\Users\alice\Desktop",
+                    r"C:\Users\alice\Desktop\Claude-Projekte"):
             assert pp.project_slugs(cwd) == [], cwd
 
     def test_forward_slashes_and_trailing_sep(self):
-        assert pp.project_slugs("C:/Users/domes/AI/evolab/") == ["evolab"]
+        assert pp.project_slugs("C:/Users/alice/AI/evolab/") == ["evolab"]
 
     def test_depth_capped_at_two(self):
         # Tiefe Unterordner (src/, tests/) sind kein Projektname.
-        assert pp.project_slugs(r"C:\Users\domes\AI\membrain\src\core") == \
+        assert pp.project_slugs(r"C:\Users\alice\AI\membrain\src\core") == \
             ["membrain"]
 
     def test_empty_and_garbage_safe(self):

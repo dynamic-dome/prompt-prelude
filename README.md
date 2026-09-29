@@ -1,5 +1,52 @@
 # prompt-prelude
 
+A `UserPromptSubmit` hook for Claude Code. Before the agent reads my prompt, the hook searches my own
+knowledge index for matching material (skills and tools that fit the task, notes from earlier sessions
+that solved something similar) and adds the best hits as a short block of context. If it finds nothing
+concrete, it stays silent.
+
+## Why
+
+I work with a large set of skills, plugins and MCP tools and a wiki that keeps growing. The agent does
+not look things up on its own at the right moment, so the hook does the lookup before the agent starts.
+In an end-to-end check, a session start took 359 ms including Python start-up.
+
+## What the measurements say
+
+Each change is checked against a threshold written down before the measurement
+(`NOTES-live-findings.md`):
+
+- **Telling the agent what to do barely changed what it did.** In v8 the hook recommended a skill.
+  Over two weeks of live data the agent followed in 11 % of cases, against 6 % without the hint:
+  +5 percentage points, below the bar set in advance. Since v9 the hook injects results only, never
+  instructions, and fires only when it has material.
+- **The first prompt of a session is where it helps.** v11 adds up to two hits for the current project
+  on the first prompt. On 46 untouched session starts, helpful hits rose from 9 % to 26 % and pure
+  noise fell from 26 % to 20 %.
+- **Most injected material goes unused.** Over 30 days, 4 of 227 injected hits were demonstrably used
+  (1.8 %, a lower bound). v12 therefore stops injecting capability hits in continued sessions.
+
+The measurements replay real prompts against variants of the hook and have the results rated by a
+separate model that does not know which variant it is looking at (`replay/`).
+
+## Limits
+
+- It depends on my private search index (agent-memory-atlas: a local daemon, with a SQLite BM25 file
+  as fallback). Without it the hook finds nothing and stays silent. It never blocks a prompt: every
+  step is fail-soft and the hook always exits 0.
+- The index is expected under `~/AI/agent-memory-atlas/.atlas-index`; set `PRELUDE_ATLAS_ROOT` to
+  point elsewhere, and `ATLAS_DAEMON_URL` for the daemon.
+- Built and used on Windows 11, Python standard library only.
+- The notes below and the measurement log `NOTES-live-findings.md` are in German.
+
+Tests: `python -m pytest -q`. `conftest.py` keeps every test away from the real logs and the real daemon.
+
+License: MIT
+
+---
+
+## Technical notes (German)
+
 UserPromptSubmit-Hook, seit v9 (Advisory-Pivot, 2026-08-04) ein **Material-Kanal**:
 injiziert vorab gesuchte Capability-Treffer, frühere Fälle und (selten) einen
 Skill-Hint — und schweigt, wenn es nichts Konkretes zu liefern gibt.

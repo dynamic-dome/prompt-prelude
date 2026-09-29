@@ -68,7 +68,7 @@ class TestSignals:
         assert s["ref"] is True
 
     def test_project_name_in_path_is_no_reference(self):
-        turn = dict(self.TURN, tool_inputs=['{"command": "cd /c/Users/domes/AI/job-radar; ls"}'],
+        turn = dict(self.TURN, tool_inputs=['{"command": "cd /c/Users/alice/AI/job-radar; ls"}'],
                     answer="Im job-radar-Ordner liegt das Skript.")
         assert up.item_signals("atlas/project-deep:job-radar", "Job-Matching", turn)["ref"] is False
 

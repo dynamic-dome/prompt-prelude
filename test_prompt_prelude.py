@@ -616,7 +616,7 @@ class TestPrecisionGate:
 
     def test_prompt_containing_only_file_path_emits(self, tmp_path, monkeypatch):
         monkeypatch.setattr(pp, "find_atlas_db", lambda root: None)
-        prompt = r"C:\Users\domes\AI\Hooks-bau\prompt-prelude-b2-gate\prompt_prelude.py"
+        prompt = r"C:\Users\alice\AI\Hooks-bau\prompt-prelude-b2-gate\prompt_prelude.py"
         out = pp.run({"prompt": prompt, "session_id": "s"},
                      http_fn=_mk_http(), **self._kw(tmp_path))
         assert out != ""
@@ -654,6 +654,17 @@ class TestCleanupState:
 
     def test_failsoft_missing_dir(self, tmp_path):
         pp.cleanup_state(str(tmp_path / "gibtsnicht"), 1.0)  # darf nicht werfen
+
+
+class TestAtlasRoot:
+    def test_default_liegt_unter_home(self, monkeypatch):
+        monkeypatch.delenv("PRELUDE_ATLAS_ROOT", raising=False)
+        erwartet = os.path.join(os.path.expanduser("~"), "AI", "agent-memory-atlas", ".atlas-index")
+        assert pp._atlas_root() == erwartet
+
+    def test_env_ueberschreibt_default(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("PRELUDE_ATLAS_ROOT", str(tmp_path))
+        assert pp._atlas_root() == str(tmp_path)
 
 
 class TestMain:
@@ -1556,7 +1567,7 @@ class TestGoalAnchor:
         assert a["prompt_preview"].startswith("Baue den Trajektor")
 
     def test_build_anchor_extracts_dirs(self):
-        a = pp.build_anchor(r"Fix in C:\Users\domes\AI\Hooks-bau\prompt-prelude\prompt_prelude.py bitte",
+        a = pp.build_anchor(r"Fix in C:\Users\alice\AI\Hooks-bau\prompt-prelude\prompt_prelude.py bitte",
                             "debug", "quiet", now=1.0)
         assert any("prompt-prelude" in d for d in a["dirs"])
 

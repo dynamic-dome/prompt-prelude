@@ -15,7 +15,7 @@ def _w(path, records):
 
 def _user(text, uuid, **kw):
     rec = {"type": "user", "uuid": uuid, "sessionId": "s1", "isSidechain": False,
-           "timestamp": "2026-09-28T07:00:00.000Z", "cwd": r"C:\Users\domes\AI\evolab",
+           "timestamp": "2026-09-28T07:00:00.000Z", "cwd": r"C:\Users\alice\AI\evolab",
            "entrypoint": "cli", "origin": {"kind": "human"},
            "message": {"role": "user", "content": text}}
     rec.update(kw)
@@ -47,7 +47,7 @@ class TestIterHumanPrompts:
                                                "und jetzt die tests dazu bitte"]
         assert got[0]["prev_assistant"] == ""
         assert got[1]["prev_assistant"] == "Erster Teil.\nDer Runner ist umgebaut."
-        assert got[1]["cwd"] == r"C:\Users\domes\AI\evolab"
+        assert got[1]["cwd"] == r"C:\Users\alice\AI\evolab"
         assert got[1]["session"] == "s1" and got[1]["uuid"] == "u2"
 
     def test_list_content_with_text_blocks_counts(self, tmp_path):

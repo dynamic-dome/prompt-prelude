@@ -10,7 +10,7 @@ import json as _json
 
 import prompt_prelude as pp
 
-EVOLAB = r"C:\Users\domes\AI\evolab"
+EVOLAB = r"C:\Users\alice\AI\evolab"
 # Kein Work-Signal, >= 40 Zeichen: v10 würde no_work_signal skippen.
 NWS_PROMPT = "hört sich gut an, aber die farbe passt noch nicht so ganz zum rest"
 
@@ -171,7 +171,7 @@ class TestSessionStartRun:
     def test_no_project_slug_no_second_search(self, tmp_path):
         calls = []
         _out, ev = _run(tmp_path, NWS_PROMPT, _transcript(tmp_path, False),
-                        cwd=r"C:\Users\domes", calls=calls)
+                        cwd=r"C:\Users\alice", calls=calls)
         assert len([u for u, _q in calls if u.endswith("/search")]) == 1
         assert ev.get("project_count", 0) == 0
 

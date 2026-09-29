@@ -631,7 +631,12 @@ def decision_record(decision, reason, *, now, session_id, prompt_preview,
         "work_signals": work_signals or [],
     }
 
-ATLAS_ROOT_DEFAULT = r"C:\Users\domes\AI\agent-memory-atlas\.atlas-index"
+# Atlas-Index (agent-memory-atlas) unter ~/AI; anderswo per PRELUDE_ATLAS_ROOT setzen.
+ATLAS_ROOT_DEFAULT = os.path.join(os.path.expanduser("~"), "AI", "agent-memory-atlas", ".atlas-index")
+
+
+def _atlas_root():
+    return os.environ.get("PRELUDE_ATLAS_ROOT") or ATLAS_ROOT_DEFAULT
 
 STOP_WORDS = {"ich", "du", "wir", "das", "die", "der", "ein", "eine", "ist", "sind",
               "hab", "habe", "bitte", "kannst", "mich", "mir", "wie", "was", "warum",
@@ -1044,7 +1049,7 @@ def _norm_slug(text):
 
 def project_slugs(cwd, depth=PROJECT_SLUG_DEPTH):
     """Projekt-Slugs aus dem Arbeitsordner, spezifischster zuerst.
-    C:\\Users\\domes\\AI\\Hooks-bau\\prompt-prelude -> [prompt-prelude, hooks-bau]."""
+    C:\\Users\\alice\\AI\\Hooks-bau\\prompt-prelude -> [prompt-prelude, hooks-bau]."""
     try:
         parts = [p for p in re.split(r"[\\/]+", str(cwd or "")) if p and not p.endswith(":")]
         low = [p.lower() for p in parts]
@@ -1481,7 +1486,7 @@ def main():
         try:
             out = run(
                 payload,
-                atlas_root=ATLAS_ROOT_DEFAULT,
+                atlas_root=_atlas_root(),
                 state_dir=_default_state_dir(),
                 log_path=log_path,
                 now=time.time(),

@@ -45,7 +45,7 @@ class TestGoalAnchor:
         assert a["prompt_preview"].startswith("Baue den Trajektor")
 
     def test_build_anchor_extracts_dirs(self):
-        a = pp.build_anchor(r"Fix in C:\Users\domes\AI\Hooks-bau\prompt-prelude\prompt_prelude.py bitte",
+        a = pp.build_anchor(r"Fix in C:\Users\<user>\AI\Hooks-bau\prompt-prelude\prompt_prelude.py bitte",
                             "debug", "quiet", now=1.0)
         assert any("prompt-prelude" in d for d in a["dirs"])
 
@@ -816,7 +816,7 @@ git commit -m "Feat(T-12): Reframing-Injektion + Telemetrie t1 + main()-Verdraht
 **Files:**
 - Modify: `test_trajektor.py`
 - Modify: `README.md` (neuer Abschnitt nach dem prompt-prelude-Setup)
-- Modify: `C:\Users\domes\.claude\settings.json` (PostToolUse-Eintrag; NUR diesen Key anfassen)
+- Modify: `C:\Users\<user>\.claude\settings.json` (PostToolUse-Eintrag; NUR diesen Key anfassen)
 
 **Interfaces:**
 - Consumes: `trajektor.py` komplett (Task 2–5)
@@ -893,7 +893,7 @@ class TestOverhead:
 
 - [ ] **Step 2: Tests grün** — Run: `python -m pytest test_trajektor.py -q` — Expected: PASS
 
-- [ ] **Step 3: Registrierung** — In `C:\Users\domes\.claude\settings.json` unter `hooks` (bestehende Einträge NICHT anfassen, chirurgisch nur den `PostToolUse`-Array-Eintrag ergänzen):
+- [ ] **Step 3: Registrierung** — In `C:\Users\<user>\.claude\settings.json` unter `hooks` (bestehende Einträge NICHT anfassen, chirurgisch nur den `PostToolUse`-Array-Eintrag ergänzen):
 
 ```json
 {
@@ -903,7 +903,7 @@ class TestOverhead:
         "hooks": [
           {
             "type": "command",
-            "command": "python C:/Users/domes/AI/Hooks-bau/prompt-prelude/trajektor.py",
+            "command": "python C:/Users/<user>/AI/Hooks-bau/prompt-prelude/trajektor.py",
             "timeout": 2
           }
         ]
