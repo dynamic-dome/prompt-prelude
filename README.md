@@ -5,6 +5,8 @@ knowledge index for matching material (skills and tools that fit the task, notes
 that solved something similar) and adds the best hits as a short block of context. If it finds nothing
 concrete, it stays silent.
 
+Background and how it fits into the larger system: [Control layer for AI agents on dynamic-dome.com](https://dynamic-dome.com/systeme/observatory/#prompt-prelude).
+
 ## Why
 
 I work with a large set of skills, plugins and MCP tools and a wiki that keeps growing. The agent does
