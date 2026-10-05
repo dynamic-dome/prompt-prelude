@@ -139,6 +139,108 @@ denselben Prompts. Bekannte Grenze: n = 46, 10 pp ≈ 5 Prompts.
 V0 useful 9 % / noise 26 %, S useful 26 % / noise 20 % — **bestanden**, als
 v11 umgesetzt (NOTES Befund 14).
 
+## Runde 4: Getrennte Töpfe und Index-Varianten — vorregistriert VOR der Messung
+
+Stand 2026-10-05, Owner-Auftrag per `/goal`. Anlass sind drei Messungen am
+aktiven Atlas-Build (DCO-Todo #9652):
+
+- Das Embedding-Modell liest höchstens 128 Tokens; 78 % der Chunks sind länger,
+  die Bedeutungssuche sieht 51 % des Chunk-Texts.
+- Die Capability-Karten machen 3 % des Index aus. Der Hook holt die besten 12
+  Treffer aus allem und filtert danach auf `atlas/`. In den bisherigen
+  Judge-Daten waren 103 von 177 „Caps"-Paaren Projekt-Dossiers
+  (`atlas/project-deep`, 14 % hilfreich) und nur 45 echte Capability-Karten.
+- `/search` kennt einen `scope`-Filter, der die Suche VOR dem Ranking
+  einschränkt. Der Hook nutzt ihn nicht.
+
+### Varianten
+
+Hook-Logik (reine Funktionen in `prompt_prelude.py`, gemessen per Replay):
+
+- **V0** = v12, wie live: flache Suche k=12; Caps = `atlas/`-Präfix, höchstens 3,
+  nur am Session-Start; Mentoren mit Allowlist und Overlap-Gate; am
+  Session-Start die Projektkarte aus einer zweiten flachen Suche mit Projektname.
+- **B** = getrennte Töpfe, gleiche Politik wie v12 (Caps und Projekt nur am
+  Session-Start, Fortsetzungen nur Mentoren):
+  - Capability-Topf: `/search` mit `scope=project:atlas`, k=12, davon nur
+    Karten der Arten `skill`, `subagent`, `plugin`, `mcp-server`, höchstens 3.
+    Dazu eine Relevanz-Untergrenze: Kosinus Prompt × Snippet über `/classify`
+    muss ≥ τ sein (Regel für τ unten). Ohne Antwort von `/classify` keine Caps.
+  - Projekt-Topf: `/search` mit dem Scope des Arbeitsordners, in zwei
+    Schreibweisen (`project:<Ordnername>` und `project:<slug>`), je der beste
+    Treffer, zusammen höchstens 2; hat nur eine Schreibweise Treffer, deren
+    beste 2. Keine Untergrenze, wie bei der v11-Projektkarte.
+  - Mentoren unverändert aus der flachen Suche.
+- **B+** (nur beschreibend, keine Übernahme in dieser Runde): wie B, aber
+  beide Töpfe auch bei Fortsetzungen. Nur auf dem Baseline-Index.
+- **V11** (Nebenmessung zu #9489, nur beschreibend): wie V0, aber Caps auch bei
+  Fortsetzungen. Zeigt an neuen Prompts, was die v12-Unterdrückung bewirkt.
+
+Index-Builds (alle aus demselben Quellstand, außerhalb des Live-Index):
+
+- **I0** Baseline: Standardwerte (Chunk-Ziel 800 Zeichen, MiniLM, 128 Tokens).
+- **I1** (A1): Chunk-Ziel 400 Zeichen, harte Obergrenze 500 Zeichen (lange
+  Absätze werden an Zeilen- und Satzgrenzen geteilt), Modell unverändert.
+- **I2** (A2): Chunks wie I0, Modell `intfloat/multilingual-e5-small`
+  (512 Tokens, Präfixe `query:` und `passage:`). Lässt sich das Modell nicht
+  laden, ersatzweise MiniLM mit `max_seq_length` 384.
+
+Gemessen werden: V0 auf I0, B auf I0, B auf I1, B auf I2, dazu B+ und V11 auf I0.
+
+### Testmenge T
+
+Alle Korpus-Prompts, die in den Runden 1 bis 3 in keiner Stichprobe waren und
+bei denen der v12-Hook sucht: Gate `pass`, oder erster Prompt einer Session mit
+mindestens 40 Zeichen und Gate `pass` oder `no_work_signal`. Stand nach dem
+Auffrischen des Korpus am 2026-10-05: **125 Prompts, davon 51 Session-Starts
+und 74 Fortsetzungen.** Die Zahl wurde vor jeder Suche gezählt; Ergebnisse
+kannte zu diesem Zeitpunkt niemand.
+
+### Judge
+
+Derselbe Brief (`replay/JUDGE_BRIEF.md`), ein einzelner Sonnet-Subagent je
+Batch, nacheinander. Paare werden über alle Varianten und Indizes gepoolt,
+gemischt und blind bewertet. Der Paar-Schlüssel enthält neben Prompt und Record
+jetzt auch das Snippet: Ein Urteil wird nur wiederverwendet, wenn alle drei
+gleich sind. Urteile früherer Runden fließen nicht in die Auswertung von T ein.
+
+### Schwelle τ für den Capability-Topf
+
+τ wird je Embedding-Modell auf den ALTEN bewerteten Caps-Paaren der Runden 1
+bis 3 bestimmt (177 Paare) und danach eingefroren, bevor ein Ergebnis auf T
+vorliegt. Raster: die Dezile 10 % bis 90 % der Kosinus-Werte dieser Paare.
+Gewählt wird das kleinste Dezil, bei dem unter den behaltenen Paaren mindestens
+35 % die Note 2 tragen (etwa das Doppelte der Grundrate) und mindestens 15 %
+der Paare übrig bleiben. Erfüllt das kein Dezil, das Dezil mit dem höchsten
+Anteil an Note 2 unter denen, die mindestens 15 % behalten.
+
+### Kriterien (Vorgabe des Owners: useful +10 Punkte, noise höchstens +5 Punkte)
+
+- **Paket B:** auf den Session-Starts von T (nur dort können sich V0 und B
+  unterscheiden), beide auf I0:
+  useful_rate(B) ≥ useful_rate(V0) + 10 pp **und**
+  noise_rate(B) ≤ noise_rate(V0) + 5 pp. Zusätzlich berichtet für ganz T.
+  Besteht B, wird es die nächste Hook-Version.
+- **Paket A:** auf ganz T, jeweils mit B als Hook-Logik:
+  useful_rate(B auf I1 bzw. I2) ≥ useful_rate(B auf I0) + 10 pp **und**
+  noise_rate ≤ noise_rate(B auf I0) + 5 pp, **und** der sichtbare
+  Navigation-Fitness-Lauf des Atlas zeigt gegenüber I0 keine Regression
+  (`regression_pass=true` nach den V3-Regeln). Bestehen beide, gewinnt die
+  höhere useful_rate, bei Gleichstand die niedrigere noise_rate. Eine bestandene
+  Variante wird als Kandidat dokumentiert; der Live-Index wird nicht umgeschaltet.
+
+### Bekannte Grenzen
+
+- Auf den Session-Starts sind 10 pp etwa 5 Prompts. Ein Bestehen ist ein
+  Indiz, keine Gewissheit, wie in Runde 3.
+- Zwei Index-Varianten werden gegen dasselbe Kriterium geprüft; das erhöht die
+  Chance auf einen Zufallstreffer.
+- I2 wechselt Modell und Fenster zugleich. Ein Unterschied zu I0 lässt sich
+  nicht einer der beiden Ursachen zuordnen.
+- τ beruht auf 177 alten Paaren, von denen die meisten Projekt-Dossiers und
+  keine Capability-Karten sind.
+- Der Judge bewertet Relevanz, nicht Nutzung (Befund 15).
+
 ## Danach
 
 - Sieger per TDD in den Hook, Telemetrie v11, Live-Beleg der Payload-Felder
