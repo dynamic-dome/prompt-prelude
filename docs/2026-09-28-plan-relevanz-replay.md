@@ -282,6 +282,58 @@ der Prompts, bei denen der Hook sucht. Weder die Art der Suche noch die
 Chunk-Größe ändert das um die verlangten 10 Punkte. Die absoluten Raten sind
 nicht mit Runde 1 vergleichbar: Dort galt der Judge als eher großzügig.
 
+## Runde 5: Relevanz-Gate mit kleinem Modell — vorregistriert VOR der Messung
+
+Stand 2026-10-05, Owner-Auftrag „zieh durch" nach dem Abschluss von Runde 4.
+
+**Hypothese (aus Befund 14):** Ob ein Treffer hilft, hängt am Gesprächsstand,
+nicht an der Ähnlichkeit. Ein kleines Modell, das Prompt, Gesprächsstand und eine
+breite Kandidatenliste sieht, wählt die wenigen hilfreichen Records aus, an denen
+feste Regeln (Präfix, Overlap, Kosinus) scheitern.
+
+**Warum ein breiter Pool:** Im schon bewerteten Material der Runde 4 steckt nur
+bei 10 von 125 Prompts überhaupt ein Treffer mit Note 2 (alle Läufe auf I0
+zusammen). Ein Gate über dieses Material käme auf höchstens 8 % und könnte die
+Latte von +10 Punkten nie erreichen. Der Test braucht deshalb mehr Kandidaten.
+
+**Kandidaten je Prompt** (Index I0, dieselbe Testmenge T wie in Runde 4, 125
+Prompts, Session-Starts wie Fortsetzungen gleich behandelt):
+
+- die 12 besten Treffer der flachen Suche, ohne Filter;
+- bis zu 5 Capability-Karten aus der Suche im Atlas-Scope, ohne Kosinus-Schwelle;
+- je Scope-Schreibweise des Arbeitsordners bis zu 5 Projekt-Treffer;
+- ohne Dubletten, höchstens 25 Kandidaten.
+
+**Gate „G":** ein Haiku-Subagent je Batch von 25 Prompts, nacheinander, mit dem
+Brief `replay/GATE_BRIEF.md`. Er sieht je Prompt den Prompt, das Ende der
+vorherigen Antwort, den Arbeitsordner und die Kandidaten (Zeile und Snippet) und
+gibt höchstens 2 Kandidaten zurück, im Zweifel keinen. Der Brief entsteht, ohne
+die Einzelurteile der Runde 4 anzusehen, und wird nach dem ersten Lauf nicht
+mehr geändert. Es gibt genau einen Lauf.
+
+**Judge:** derselbe Brief und derselbe Paar-Schlüssel wie in Runde 4 (Prompt,
+Record, Snippet). Schon bewertete Paare behalten ihr Urteil, neue Paare gehen
+blind an einen Sonnet-Subagenten. Der Judge erfährt nicht, dass ein Gate
+vorgeschaltet war.
+
+**Kriterium (Vorgabe des Owners, unverändert), auf ganz T, gegen V0 auf I0:**
+useful_rate(G) ≥ useful_rate(V0) + 10 pp **und** noise_rate(G) ≤ noise_rate(V0) + 5 pp.
+V0 liegt bei 5 von 125 hilfreich und 33 von 125 nur Rauschen.
+
+**Zusätzlich berichtet, ohne Entscheidung:** Anteil der Prompts, bei denen das
+Gate schweigt; Treffsicherheit der behaltenen Items; das „Leise-Kriterium"
+(noise höchstens halb so hoch wie V0 bei useful mindestens wie V0).
+
+**Folgen:** Besteht G, ist es ein Kandidat für einen Mod (nur dort hat der Hook
+Zugriff auf ein Modell) und braucht vor jedem Live-Einsatz eine Bestätigung an
+frischen Prompts. Besteht G nicht, endet die Suche nach besseren Such- und
+Filter-Varianten; die Frage aus Befund 16 geht mit den Zahlen je Topf an den Owner.
+
+**Bekannte Grenzen:** T wird zum zweiten Mal benutzt. Ein Haiku-Subagent, der 25
+Prompts am Stück bearbeitet, ist nicht dasselbe wie ein Modellaufruf je Prompt
+in einem Mod. Wartezeit und Verbrauch eines Live-Gates werden hier nicht
+gemessen. Ein einzelner Lauf sagt nichts über die Streuung.
+
 ## Danach
 
 - Sieger per TDD in den Hook, Telemetrie v11, Live-Beleg der Payload-Felder
