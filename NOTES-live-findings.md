@@ -416,6 +416,52 @@ oder wird er auf den Session-Start beschränkt (dort 8 %)? Ein Relevanz-Gate mit
 kleinem Modell und Gesprächsstand ist weiter ungetestet; es wäre der nächste
 Kandidat für den Replay.
 
+## Befund 17 (2026-10-05, Runde 5): Ein kleines Modell als Gate besteht — hilfreich bei 17 % statt 4 %, Rauschen 10 % statt 24 %
+Vorregistriert in `docs/2026-09-28-plan-relevanz-replay.md` (Runde 5, Commit vor
+der Messung). Hypothese aus Befund 14: Ob ein Treffer hilft, hängt am
+Gesprächsstand. Ein Haiku-Subagent sieht je Prompt den Prompt, das Ende der
+vorherigen Antwort, den Arbeitsordner und einen breiten Pool (flache Top 12,
+Capability-Karten, Projekt-Treffer; im Mittel 17 Kandidaten) und behält höchstens
+zwei, im Zweifel keinen. Dieselbe Testmenge T wie in Runde 4 (125 Prompts).
+
+**Erstmals seit Befund 13 besteht eine Variante die Latte von +10 Punkten:**
+
+| | Material | hilfreich | nur Rauschen | Treffsicherheit (Note 2 je Item) |
+|---|---|---|---|---|
+| V0 (v12, live) | 46 von 125 | 5 (4 %) | 30 (24 %) | 5 von 69 (7 %) |
+| G (Pool + Gate) | 67 von 125 | 21 (17 %) | 13 (10 %) | 24 von 91 (26 %) |
+
+Zahlen aus dem Bestätigungslauf: Alle 156 Paare von V0 und G gemischt, von
+frischen Judges neu bewertet (132 von 156 Urteile gleich wie zuvor, Note 2 28-mal
+statt 27-mal). Die vorregistrierte Erstauswertung zeigt dasselbe Bild (5 → 21
+hilfreich, 33 → 15 Rauschen).
+
+**Was das erklärt:**
+1. **Der Engpass war die Auswahl, nicht die Suche.** In Runde 4 steckte im
+   eingespielten Material nur bei 10 von 125 Prompts ein Treffer mit Note 2. Der
+   breite Pool enthält deutlich mehr, das Gate findet sie.
+2. **22 der 24 hilfreichen Treffer hätte keine bisherige Regel gewählt** (nachgezählt
+   gegen V0 und V11). Sie verteilen sich breit: Capability-Karten 6, Haupt-Wiki 5,
+   Projekt-Doku 4, Learnings 4, Claude-Memory 4, Ideen-Backlog 1. Die festen
+   Partitions-Filter (`atlas/`-Präfix, Mentor-Allowlist) schneiden genau das weg.
+3. **Das Gate hilft auch bei Fortsetzungen** (1 → 9 von 74), wo v12 fast nur
+   schweigt.
+
+**Grenzen, ehrlich:**
+- T wurde zum zweiten Mal benutzt. Vor einem Live-Einsatz braucht es frische Prompts.
+- Das Gate lief als Subagent über 25 Prompts am Stück, nicht als Modellaufruf je
+  Prompt. Seine Strenge schwankte stark (9 bis 37 behaltene Kandidaten je Batch),
+  zwei Prompts wurden ausgelassen und nachbewertet.
+- Wartezeit und Verbrauch je Prompt sind nicht gemessen.
+- 46 der 67 Prompts mit Material bekommen weiter nichts mit Note 2; bei 13 ist
+  alles Rauschen, beim Rest liegt der beste Treffer „am Rand".
+
+**Konsequenz:** Der Hook kann kein Modell aufrufen; ein Gate geht nur als Mod
+(`$.model.complete`). `run()` und die Telemetrie-Version bleiben unverändert.
+Nächster Kandidat: ein Mod im Schattenmodus, der an echten Prompts mitschreibt,
+was er einspielen würde, ohne es einzuspielen. Das liefert die frischen Prompts
+für die Bestätigung und misst Wartezeit und Verbrauch (Owner-Entscheid).
+
 ## Status (aktualisiert 2026-07-02 abend, Iteration 1)
 - Befund 1: `domain+phase`-Key + RAG-Bezug-Re-Arm umgesetzt (frühere Session).
   **Offen:** Re-Arm nach N Prompts (State-Format `set` → `{key: fired_at}`) —

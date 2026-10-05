@@ -350,6 +350,45 @@ nacheinander). Ausgewertet wird allein mit diesen Urteilen, mit demselben
 Kriterium. Gate, Pool und Kriterium bleiben unverändert. Berichtet werden beide
 Auswertungen; für die Folgen zählt der Bestätigungslauf.
 
+### Ergebnis Runde 5 (2026-10-05, NOTES Befund 17)
+
+Pool: 2.261 Kandidaten für die 125 Prompts (Median 17 je Prompt), 0 Daemon-Fehler.
+Gate: fünf Haiku-Batches nacheinander, 125 von 125 Antworten ohne Formfehler.
+Das Gate schwieg bei 58 Prompts und behielt bei 67 Prompts 91 Kandidaten.
+
+| Auswertung | Lauf | Material | useful | noise | Items / Note 2 / Note ≥ 1 |
+|---|---|---:|---:|---:|---|
+| vorregistriert (alte Urteile behalten) | V0 | 46 | 5 (4 %) | 33 (26 %) | 69 / 5 / 17 |
+| vorregistriert | G | 67 | 21 (17 %) | 15 (12 %) | 91 / 24 / 67 |
+| Bestätigung (einheitlicher Judge) | V0 | 46 | 5 (4 %) | 30 (24 %) | 69 / 5 / 19 |
+| Bestätigung | G | 67 | 21 (17 %) | 13 (10 %) | 91 / 24 / 70 |
+
+**Kriterium erfüllt, in beiden Auswertungen:** useful +13 Punkte (verlangt +10),
+noise −14 Punkte (erlaubt +5). Das Leise-Kriterium ist ebenfalls erfüllt.
+
+Im Bestätigungslauf nach Gruppe: Session-Starts 4 → 12 von 51 hilfreich, 19 → 4
+nur Rauschen. Fortsetzungen 1 → 9 von 74 hilfreich, 11 → 9 nur Rauschen.
+Die behaltenen Items stammen zu 57 aus der flachen Suche (18 mit Note 2), zu 27
+aus dem Capability-Topf (4) und zu 7 aus dem Projekt-Topf (2).
+
+Judge: 76 neue Paare und 49 Kontrollpaare in einem Batch; Kontrolle 43 von 49
+gleich, Note 2 fünfmal statt zweimal. Im Bestätigungslauf 156 Paare neu, 132 von
+156 gleich wie zuvor, Note 2 28-mal statt 27-mal. Das Ergebnis hängt also nicht an
+einem milden Judge-Lauf.
+
+**Abweichungen vom Plan, alle vor der Auswertung entstanden:**
+
+- Zwei Gate-Batches ließen je einen Prompt aus. Beide wurden einzeln mit demselben
+  Brief nachbewertet; kein schon bewerteter Prompt wurde wiederholt.
+- Der Auftrag für Batch 4 trug einen Zusatzsatz zum Abgleich der Kennungen. Die
+  Auswahlregel war unverändert.
+- Batch 4 behielt 37 Kandidaten, Batch 1 nur 9. Die Strenge des Gates schwankt
+  zwischen Läufen stark; die Treffsicherheit je Batch lag dabei ähnlich (1 von 9
+  bis 11 von 37 mit Note 2).
+
+**Folge laut Vorregistrierung:** G ist ein Kandidat für einen Mod und braucht vor
+jedem Live-Einsatz eine Bestätigung an frischen Prompts. `run()` bleibt unverändert.
+
 ## Danach
 
 - Sieger per TDD in den Hook, Telemetrie v11, Live-Beleg der Payload-Felder
