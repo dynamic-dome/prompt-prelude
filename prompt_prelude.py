@@ -1229,6 +1229,154 @@ def lookup_capabilities(terms, atlas_root, budget, http_fn=None, limit=3, daemon
                           limit=limit, daemon_ok=daemon_ok)[:3]
 
 
+# --- Runde 4: getrennte Töpfe (docs/2026-09-28-plan-relevanz-replay.md) -----
+# Der Hook holte bisher die besten 12 Treffer aus allem und filterte danach auf
+# den Präfix "atlas/". Capability-Karten sind 3 % des Index und tauchen dort
+# selten auf; was durchkam, waren meist Dossiers fremder Projekte. `/search`
+# kennt einen scope-Filter, der VOR dem Ranking einschränkt: je Topf eine eigene
+# Suche. STATUS: Kandidat B — der Hook nutzt das erst, wenn das vorregistrierte
+# Kriterium besteht (NOTES).
+CAP_SCOPE = "project:atlas"
+CAP_KINDS = ("skill", "subagent", "plugin", "mcp-server")
+CAP_POT_K = 12
+CAP_POT_LIMIT = 3
+PROJECT_POT_K = 5
+PROJECT_POT_LIMIT = 2
+
+
+def search_scoped_via_daemon(terms, scope, k=CAP_POT_K, timeout=None, http_fn=None):
+    """POST /search mit scope-Filter. -> results-Liste (evtl. leer) oder None
+    bei JEDEM Fehler."""
+    try:
+        fn = http_fn or _http_post_json
+        t = timeout if timeout is not None else _daemon_timeout()
+        data = fn(_daemon_url() + "/search",
+                  {"query": str(terms), "k": int(k), "scope": str(scope)}, t)
+        results = data["results"]
+        return results if isinstance(results, list) else None
+    except Exception:
+        return None
+
+
+def is_capability_record(record_id):
+    """Echte Fähigkeits-Karte (Skill, Subagent, Plugin, MCP-Server) — nicht die
+    Projekt-Dossiers, Ansätze und Dashboards, die ebenfalls unter atlas/ liegen."""
+    rid = str(record_id or "")
+    if not rid.startswith("atlas/"):
+        return False
+    kind, sep, _name = rid[len("atlas/"):].partition(":")
+    return bool(sep) and kind in CAP_KINDS
+
+
+def select_capability_hits(results, limit=CAP_POT_LIMIT, exclude=()):
+    """Fähigkeits-Karten in Such-Reihenfolge, ohne bereits gewählte record_ids."""
+    out = []
+    try:
+        for r in results or []:
+            if not isinstance(r, dict):
+                continue
+            rid = r.get("record_id")
+            if rid in exclude or not is_capability_record(rid):
+                continue
+            out.append(r)
+            if len(out) >= limit:
+                break
+    except Exception:
+        return []
+    return out
+
+
+def project_scopes(cwd, depth=PROJECT_SLUG_DEPTH):
+    """Scope-Schreibweisen des Arbeitsordners, höchstens zwei: der Ordnername,
+    wie er auf der Platte steht (so tragen .agent-memory-Stores ihren Scope),
+    und der normalisierte Slug (so heißen die Projektkarten des Atlas).
+    Gleiche Ordner-Auswahl wie project_slugs."""
+    try:
+        parts = [p for p in re.split(r"[\\/]+", str(cwd or "")) if p and not p.endswith(":")]
+        low = [p.lower() for p in parts]
+        if "users" in low and low.index("users") + 1 < len(parts):
+            rest = parts[low.index("users") + 2:]
+        else:
+            rest = parts[-1:]
+        while rest and _norm_slug(rest[0]) in _LEADING_GENERIC_DIRS:
+            rest = rest[1:]
+        raw = [p for p in rest[:depth]
+               if _norm_slug(p) and _norm_slug(p) not in _TRAILING_GENERIC_DIRS]
+        if not raw:
+            return []
+        name = raw[-1]
+        out = []
+        for scope in (f"project:{name}", f"project:{_norm_slug(name)}"):
+            if scope not in out:
+                out.append(scope)
+        return out
+    except Exception:
+        return []
+
+
+def select_project_pot(results_by_scope, limit=PROJECT_POT_LIMIT, exclude=()):
+    """Reihum je Scope-Schreibweise der nächstbeste Treffer, bis `limit`
+    erreicht ist. Hat nur eine Schreibweise Treffer, kommen deren beste."""
+    try:
+        lists = [[r for r in (res or []) if isinstance(r, dict)]
+                 for res in results_by_scope or []]
+        seen = set(exclude)
+        out, pos = [], [0] * len(lists)
+        while len(out) < limit:
+            progressed = False
+            for i, lst in enumerate(lists):
+                while pos[i] < len(lst) and lst[pos[i]].get("record_id") in seen:
+                    pos[i] += 1
+                if pos[i] >= len(lst):
+                    continue
+                hit = lst[pos[i]]
+                pos[i] += 1
+                seen.add(hit.get("record_id"))
+                out.append(hit)
+                progressed = True
+                if len(out) >= limit:
+                    break
+            if not progressed:
+                break
+        return out
+    except Exception:
+        return []
+
+
+def lookup_capability_pot(prompt, terms, budget, tau, http_fn=None, exclude=()):
+    """Capability-Topf: Suche im Atlas-Scope, nur Fähigkeits-Karten, dann die
+    Relevanz-Untergrenze (Kosinus Prompt x Snippet >= tau über /classify).
+    Ohne /classify-Antwort keine Caps — leer ist besser als falsch.
+    -> ([hint], source)."""
+    if not str(terms).strip():
+        return [], "none"
+    results = budget.call(search_scoped_via_daemon, terms, CAP_SCOPE, CAP_POT_K,
+                          http_fn=http_fn)
+    hits = select_capability_hits(results, exclude=exclude)
+    if not hits:
+        return [], "none"
+    items = [{"rid": str(r.get("record_id")), "snippet": _cap_text(r.get("snippet")),
+              "result": r} for r in hits]
+    scores = budget.call(score_items, prompt, items, http_fn=http_fn)
+    kept = gate_items(items, scores, tau) if scores else []
+    hints = [h for h in (format_cap_hint(i["result"]) for i in kept) if h]
+    return hints, ("daemon" if hints else "none")
+
+
+def lookup_project_pot(terms, cwd, budget, exclude=(), http_fn=None):
+    """Projekt-Topf: je Scope-Schreibweise des Arbeitsordners eine Suche.
+    -> ([{rid, snippet}], source)."""
+    scopes = project_scopes(cwd)
+    if not scopes or not str(terms).strip():
+        return [], "none"
+    by_scope = [budget.call(search_scoped_via_daemon, terms, scope, PROJECT_POT_K,
+                            http_fn=http_fn) for scope in scopes]
+    hits = select_project_pot(by_scope, exclude=exclude)
+    items = [{"rid": str(r.get("record_id")), "snippet": _cap_text(r.get("snippet"))}
+             for r in hits]
+    return items, ("daemon" if items else "none")
+
+
 def run(payload, *, atlas_root, state_dir, log_path, now, http_fn=None, budget=None, decision_log_path=None):
     if not isinstance(payload, dict):
         return ""
