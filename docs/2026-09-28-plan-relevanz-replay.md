@@ -334,6 +334,22 @@ Prompts am Stück bearbeitet, ist nicht dasselbe wie ein Modellaufruf je Prompt
 in einem Mod. Wartezeit und Verbrauch eines Live-Gates werden hier nicht
 gemessen. Ein einzelner Lauf sagt nichts über die Streuung.
 
+### Runde 5, Bestätigungslauf mit einheitlichem Judge — festgelegt VOR dem Lauf
+
+Nach dem vorregistrierten Verfahren ist das Kriterium erfüllt (Zahlen unter
+„Ergebnis Runde 5"). Die Kontrolle zeigt aber eine Schwäche des Verfahrens: 49
+schon bewertete Paare lagen dem Judge der Runde 5 erneut vor. 43 bekamen dieselbe
+Note, die Note 2 kam fünfmal statt zweimal vor. Dieser Judge-Lauf war an der
+Grenze zwischen 1 und 2 milder. Das begünstigt G, weil nur dessen 76 neue Paare
+von diesem Lauf bewertet wurden: 15 der 21 hilfreichen Prompts von G beruhen
+allein auf neuen Urteilen.
+
+Deshalb ein Bestätigungslauf: Alle Paare von V0 und G werden gemischt und von
+frischen Sonnet-Judges mit demselben Auftrag neu bewertet (zwei Batches,
+nacheinander). Ausgewertet wird allein mit diesen Urteilen, mit demselben
+Kriterium. Gate, Pool und Kriterium bleiben unverändert. Berichtet werden beide
+Auswertungen; für die Folgen zählt der Bestätigungslauf.
+
 ## Danach
 
 - Sieger per TDD in den Hook, Telemetrie v11, Live-Beleg der Payload-Felder

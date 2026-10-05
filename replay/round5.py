@@ -133,12 +133,99 @@ def _entries(data):
 
 
 def _all_verdicts(data, known):
+    """Urteile aus Runde 4 und 5. `known` wird um die Paare der Runde-4-Läufe
+    erweitert: Urteile zu Paaren, die im aktuellen Vergleich nicht vorkommen,
+    sind gültig und zählen nicht als fehlerhafte Zeile."""
+    corpus = r4._load_corpus(data)
+    known = set(known) | set(r4.collect_pairs(r4._load_runs(Path(data) / "r4"), corpus))
     verdicts, bad = {}, []
     for sub in ("r4", "r5"):
         v, b = r4._load_verdicts(Path(data) / sub, known)
         verdicts.update(v)
         bad.extend(b)
     return verdicts, bad
+
+
+CONFIRM_BATCH = 80
+
+
+def confirm_pairs(data, r5):
+    """Alle Paare von V0 und G zusammen — für den Bestätigungslauf mit einem
+    einheitlichen Judge."""
+    _entries_, corpus, base_rows = _entries(data)
+    runs = {BASELINE_RUN: base_rows, **r4._load_runs(r5)}
+    return runs, r4.collect_pairs(runs, corpus)
+
+
+def load_confirm_verdicts(lines, known):
+    """-> ({pair_id: note}, [fehlerhafte Zeilen])."""
+    verdicts, bad = {}, []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+            key, score = rec["pair_id"], rec["score"]
+            ok = key in known and type(score) is int and score in (0, 1, 2)
+        except (ValueError, KeyError, TypeError):
+            ok = False
+        if ok:
+            verdicts[key] = score
+        else:
+            bad.append(line[:80])
+    return verdicts, bad
+
+
+def cmd_confirm_prepare(args, r5):
+    _runs, pairs = confirm_pairs(args.data, r5)
+    todo = sorted(pairs)
+    random.Random(args.seed + 100).shuffle(todo)
+    cdir = r5 / "confirm"
+    cdir.mkdir(parents=True, exist_ok=True)
+    batches = [todo[i:i + CONFIRM_BATCH] for i in range(0, len(todo), CONFIRM_BATCH)]
+    for i, batch in enumerate(batches, 1):
+        with open(cdir / f"batch_{i:02d}.jsonl", "w", encoding="utf-8") as fh:
+            for key in batch:
+                fh.write(json.dumps(pairs[key], ensure_ascii=False) + "\n")
+    print(f"Bestätigungslauf: {len(todo)} Paare (V0 und G gemischt) in {len(batches)} Batches")
+    return 0
+
+
+def cmd_confirm_score(args, r5):
+    runs, pairs = confirm_pairs(args.data, r5)
+    lines = []
+    for path in sorted((r5 / "confirm").glob("verdicts_*.jsonl")):
+        lines += path.read_text(encoding="utf-8").splitlines()
+    verdicts, bad = load_confirm_verdicts(lines, set(pairs))
+    print(f"Urteile (nur Bestätigungslauf): {len(verdicts)}/{len(pairs)} | "
+          f"ungültige Zeilen: {len(bad)}")
+    first, _ = _all_verdicts(args.data, set(pairs))
+    both = [(first[k], verdicts[k]) for k in verdicts if k in first]
+    same = sum(1 for a, b in both if a == b)
+    print(f"Übereinstimmung mit den ersten Urteilen: {same}/{len(both)} | Note 2 zuerst "
+          f"{sum(1 for a, _b in both if a == 2)}, jetzt {sum(1 for _a, b in both if b == 2)}")
+    summary = {}
+    for group, label in (("start", "Session-Starts"), ("cont", "Fortsetzungen"), (None, "ganz T")):
+        print(f"\n[{label}]")
+        print("  Lauf        n  material  useful  noise  prec2  prec1  items  offen")
+        for name, rows in runs.items():
+            m = r4.score_rows(rows, verdicts, group)
+            summary.setdefault(name, {})[group or "all"] = m
+            print(f"  {name:<10} {m['n']:>3} {m['material_rate']:>8.0%} {m['useful_rate']:>7.0%} "
+                  f"{m['noise_rate']:>6.0%} {m['precision_strict']:>6.0%} "
+                  f"{m['precision_lenient']:>6.0%} {m['items']:>6} {m['unjudged']:>6}")
+    g, b = summary["I0__G"]["all"], summary[BASELINE_RUN]["all"]
+    n = g["n"]
+    ok = r4.passes(g, b)
+    summary["_criteria"] = {"Runde 5 Bestätigung": ok, "Leise-Kriterium": quiet_criterion(g, b)}
+    print("\n[Kriterium mit einheitlichem Judge: useful >= +10 pp, noise <= +5 pp, ganz T]")
+    print(f"  G gegen V0: useful {round(b['useful_rate'] * n)} -> {round(g['useful_rate'] * n)} "
+          f"von {n} ({b['useful_rate']:.0%} -> {g['useful_rate']:.0%}), "
+          f"noise {round(b['noise_rate'] * n)} -> {round(g['noise_rate'] * n)} "
+          f"({b['noise_rate']:.0%} -> {g['noise_rate']:.0%}) => "
+          f"{'ERFÜLLT' if ok else 'nicht erfüllt'}")
+    (r5 / "confirm_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    return 0
 
 
 def _load_pools(r5):
@@ -250,7 +337,8 @@ def cmd_score(args, r5):
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description="Runde 5: Relevanz-Gate")
-    ap.add_argument("cmd", choices=["pool", "apply", "prepare", "score"])
+    ap.add_argument("cmd", choices=["pool", "apply", "prepare", "score",
+                                    "confirm-prepare", "confirm-score"])
     ap.add_argument("--data", required=True, help="Datenordner mit corpus.jsonl und r4/")
     ap.add_argument("--daemon-url", help="Daemon des Index-Builds I0")
     ap.add_argument("--batch-size", type=int, default=125)
@@ -261,7 +349,9 @@ def main(argv=None):
     r5 = Path(args.data) / "r5"
     r5.mkdir(parents=True, exist_ok=True)
     return {"pool": cmd_pool, "apply": cmd_apply,
-            "prepare": cmd_prepare, "score": cmd_score}[args.cmd](args, r5)
+            "prepare": cmd_prepare, "score": cmd_score,
+            "confirm-prepare": cmd_confirm_prepare,
+            "confirm-score": cmd_confirm_score}[args.cmd](args, r5)
 
 
 if __name__ == "__main__":
