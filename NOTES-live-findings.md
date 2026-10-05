@@ -369,6 +369,53 @@ echter Daemon): 2 Caps unterdrückt, ohne Mentoren still. Nebenbefund:
 Gesamtlaufzeit schwankte 0,4–2,7 s bei Daemon 50–80 ms (Prozessstart/Scanner
 auf frischer Temp-Kopie vermutet) — Hook-Timeout ist 2 s, Live-Laufzeit prüfen.
 
+## Befund 16 (2026-10-05, Runde 4): Getrennte Töpfe senken das Rauschen, aber nichts hebt den Nutzen — und unter strengem Judge hilft das Material bei 4 %
+Vorregistriert in `docs/2026-09-28-plan-relevanz-replay.md` (Runde 4, Commit vor
+der Messung). Anlass: DCO-Todo #9652 (das Embedding sieht 51 % des Chunk-Texts;
+Capability-Karten sind 3 % des Index; `/search` kennt einen `scope`-Filter).
+Testmenge T: 125 unberührte Prompts, bei denen der v12-Hook sucht (51
+Session-Starts, 74 Fortsetzungen). Drei Index-Builds aus demselben Quellstand,
+außerhalb des Live-Index: I0 Baseline, I1 mit Chunks bis 500 Zeichen, I2 mit
+`multilingual-e5-small`. 312 Paare, 312 gültige Urteile, drei Sonnet-Batches;
+Zählungen selbst nachgeprüft; Kalibrierung 15 von 15 gleich.
+
+**Entscheid nach Kriterium (useful ≥ +10 pp, noise ≤ +5 pp): nichts wird übernommen.**
+
+| Vergleich | Gruppe | useful | noise |
+|---|---|---|---|
+| B gegen V0, beide I0 | Session-Starts (n=51) | 8 % → 6 % | 41 % → 24 % |
+| B auf I1 gegen B auf I0 | ganz T (n=125) | 3 % → 2 % | 19 % → 19 % |
+| B auf I2 gegen B auf I0 | ganz T (n=125) | 3 % → 6 % | 19 % → 23 % |
+
+**Kernbefunde:**
+1. **Die Töpfe machen den Hook leiser, nicht hilfreicher.** Am Session-Start
+   bekommen 23 statt 31 Prompts Material, 12 statt 21 nur Rauschen, 3 statt 4
+   einen hilfreichen Treffer. Die Kosinus-Untergrenze lässt von 144
+   Capability-Kandidaten 9 durch.
+2. **Der v12-Hook hilft bei 5 von 125 Prompts (4 %) und rauscht bei 33 (26 %).**
+   Der Judge war in allen Batches ausdrücklich streng gebrieft; die Zahl ist
+   deshalb nicht mit den 15 % aus Befund 13 vergleichbar.
+3. **Kleinere Chunks bringen im Hook nichts** (I1: useful 3 von 125).
+4. **Das e5-Modell ist die einzige Variante mit sichtbarem Gewinn**, bleibt aber
+   unter der Latte: 7 statt 4 hilfreiche Prompts, 29 statt 24 Rausch-Prompts.
+   Im Navigation-Benchmark des Atlas steigt der sichtbare Gesamtwert von 0,435
+   auf 0,465; eine der 17 Aufgaben verliert dabei alle Ziele, deshalb fällt das
+   Regressions-Gate.
+5. **v12 an neuen Prompts bestätigt (#9489):** Caps bei Fortsetzungen hätten 40
+   von 74 Prompts nur Rauschen eingespielt, ohne sie sind es 12.
+6. **Töpfe auch bei Fortsetzungen wären schädlich:** Der Projekt-Topf liefert
+   dort 108 Items, 2 davon mit Note 2.
+
+**Was bleibt:** Die Topf-Funktionen und der Runner `replay/round4.py` liegen als
+ungenutzter Kandidat im Repo (`run()` unverändert, Telemetrie-Version unverändert).
+Der Paar-Schlüssel der Runde 4 enthält das Snippet; Urteile früherer Runden
+wurden nicht wiederverwendet.
+
+**Offen für den Owner:** Lohnt der Material-Kanal bei 4 % Nutzen den Aufwand,
+oder wird er auf den Session-Start beschränkt (dort 8 %)? Ein Relevanz-Gate mit
+kleinem Modell und Gesprächsstand ist weiter ungetestet; es wäre der nächste
+Kandidat für den Replay.
+
 ## Status (aktualisiert 2026-07-02 abend, Iteration 1)
 - Befund 1: `domain+phase`-Key + RAG-Bezug-Re-Arm umgesetzt (frühere Session).
   **Offen:** Re-Arm nach N Prompts (State-Format `set` → `{key: fired_at}`) —

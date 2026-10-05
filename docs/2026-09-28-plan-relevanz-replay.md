@@ -241,6 +241,47 @@ Anteil an Note 2 unter denen, die mindestens 15 % behalten.
   keine Capability-Karten sind.
 - Der Judge bewertet Relevanz, nicht Nutzung (Befund 15).
 
+### Ergebnis Runde 4 (2026-10-05, NOTES Befund 16)
+
+312 Paare, 312 gültige Urteile, drei Sonnet-Batches nacheinander, alle mit
+demselben Auftrag. Kalibrierung an 15 zufälligen Paaren aus Batch 1, vom
+Hauptagenten blind vorab bewertet: 15 von 15 gleich. τ = 0,528 (MiniLM, 80.
+Dezil, 36 % Note 2) und τ = 0,846 (e5, 80. Dezil als Rückfall-Wahl, 31 %).
+
+| Lauf | Gruppe | n | Material | useful | noise |
+|---|---|---:|---:|---:|---:|
+| V0 auf I0 (v12, live) | Session-Starts | 51 | 31 | 4 (8 %) | 21 (41 %) |
+| B auf I0 | Session-Starts | 51 | 23 | 3 (6 %) | 12 (24 %) |
+| V0 auf I0 | ganz T | 125 | 46 | 5 (4 %) | 33 (26 %) |
+| B auf I0 | ganz T | 125 | 38 | 4 (3 %) | 24 (19 %) |
+| B auf I1 (kleinere Chunks) | ganz T | 125 | 42 | 3 (2 %) | 24 (19 %) |
+| B auf I2 (e5-Modell) | ganz T | 125 | 42 | 7 (6 %) | 29 (23 %) |
+
+- **Paket B: nicht erfüllt.** useful 8 % → 6 % (verlangt +10 pp), noise 41 % → 24 %.
+  Die Töpfe halbieren das Rauschen am Session-Start fast, bringen aber keinen
+  zusätzlichen hilfreichen Treffer. `run()` bleibt unverändert.
+- **Paket A1 (I1): nicht erfüllt.** useful 3 % → 2 %, noise unverändert; dazu drei
+  Navigation-Aufgaben mit Abfall über 0,05.
+- **Paket A2 (I2): nicht erfüllt.** useful 3 % → 6 % (+3 pp), noise 19 % → 23 %; dazu
+  eine Navigation-Aufgabe mit Abfall 0,12. Der sichtbare Gesamtwert steigt dabei
+  von 0,435 auf 0,465, Findability von 0,365 auf 0,448.
+
+Beschreibend, ohne Entscheidung:
+
+- **V11 gegen V0 bei Fortsetzungen (#9489):** Mit Caps (V11) bekommen 46 von 74
+  Prompts Material, 3 hilfreich, 40 nur Rauschen. Ohne Caps (v12) 15, 1 und 12.
+  Die v12-Unterdrückung senkt das Rauschen von 54 % auf 16 % und kostet zwei
+  hilfreiche Prompts.
+- **B+ (Töpfe auch bei Fortsetzungen):** 54 von 74 mit Material, 3 hilfreich, 29
+  nur Rauschen. Der Projekt-Topf liefert dort 108 Items, davon 2 mit Note 2.
+- **Treffsicherheit je Topf, B auf I0 (Items / Note 2 / Note ≥ 1):** Caps 9/1/2,
+  Mentoren 35/2/8, Projekt 16/1/8.
+
+Einordnung: Unter einem strengen Judge hilft das eingespielte Material bei 4 %
+der Prompts, bei denen der Hook sucht. Weder die Art der Suche noch die
+Chunk-Größe ändert das um die verlangten 10 Punkte. Die absoluten Raten sind
+nicht mit Runde 1 vergleichbar: Dort galt der Judge als eher großzügig.
+
 ## Danach
 
 - Sieger per TDD in den Hook, Telemetrie v11, Live-Beleg der Payload-Felder
