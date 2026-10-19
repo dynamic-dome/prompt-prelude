@@ -193,6 +193,12 @@ class TestParseReply:
         r = v2.parse_reply(_reply(learnings=learn), _pools(), True)
         assert [k["cid"] for k in r["kept"]["learnings"]] == ["l01", "l02", "l03"]
 
+    def test_empty_object_is_parsed_and_keeps_nothing(self):
+        # Gepinnt, weil der Mod (parseReplyV2) es spiegeln muss: '{}' ist lesbar, behaelt aber nichts.
+        r = v2.parse_reply("{}", _pools(), False)
+        assert r == {"kept": {"learnings": [], "skills": [], "capabilities": []}, "clarify": "",
+                     "is_parsed": True}
+
     def test_garbage_keeps_nothing(self):
         empty = {"learnings": [], "skills": [], "capabilities": []}
         for bad in ("kein json", "", "{kaputt", "[1, 2]", "null", "{}}{"):

@@ -43,8 +43,9 @@ Im Zweifel zwischen zwei Stufen von `relevant` bis `noise` die niedrigere wähle
 unabhängig bewerten, außer für `duplicate`.
 
 ## Blind
-Du weißt absichtlich nicht, aus welcher Quelle oder Messvariante ein Eintrag stammt, ob er alt oder
-neu ist oder ob ein Gold-Label existiert. Rate das nicht und lass es nicht in das Urteil einfließen.
+Du weißt absichtlich nicht, welcher Messvariante (alt oder neu) ein Eintrag angehört und ob ein
+Gold-Label existiert. Rate das nicht und lass es nicht in das Urteil einfließen. Die Kennung (`rid`)
+kann Quelle und Topf erkennen lassen (zum Beispiel am Präfix); das darf das Urteil nicht lenken.
 Bewerte nur Prompt, Gesprächsstand und Eintragstext.
 
 ## Scope und Grenzen

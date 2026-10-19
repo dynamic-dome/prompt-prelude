@@ -11,6 +11,9 @@ Gold-Regeln:
 - positives: Records mit Verdikt `relevant` plus die vom Gutachter genannten
   Kandidaten (Suffix " (...)" abgeschnitten). Bei `already_in_static_context`
   zaehlen Kandidaten nicht - das Wissen steht schon im statischen Kontext.
+  Mit `--index-metadata <build>/metadata.json` (nur gelesen) wandern Positive, die es zum
+  Prompt-Zeitpunkt noch nicht gab (`valid_from` > `ts`), nach `positives_future`: die
+  Zeitreise-Suche (`as_of`) kann sie nie liefern, sie waeren unvermeidbare Fehlstellen.
 - negatives: Records mit Verdikt `irrelevant` (nicht, wenn dieselbe rid auch positiv ist).
   `marginal` und `duplicate` sind weder noch.
 - expect_nothing: kein `relevant`-Treffer und `better_missing` in
@@ -26,6 +29,7 @@ Spec §8 aus und schreibt `summary.json`.
 import argparse
 import json
 import re
+import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -89,11 +93,34 @@ def _unique(seq):
     return list(dict.fromkeys(seq))
 
 
-def build_cases(events, sample, judgments, read_prompts, skipped=None):
+def _visible_from(value):
+    """Epoche, ab der der Daemon einen Record bei `as_of` zeigt (wie `query_engine._is_visible`:
+    ohne Zeitzone gilt UTC, ohne lesbares `valid_from` ist der Record immer sichtbar)."""
+    try:
+        at = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return float("-inf")
+    return (at if at.tzinfo else at.replace(tzinfo=timezone.utc)).timestamp()
+
+
+def first_visible(chunks):
+    """Chunk-Metadaten des Index (Liste von {record_id, valid_from, ...}) -> {record_id: Epoche
+    des fruehesten sichtbaren Chunks}. Nur lesen; Texte bleiben ungenutzt."""
+    seen = {}
+    for chunk in chunks:
+        rid = chunk.get("record_id")
+        if rid:
+            at = _visible_from(chunk.get("valid_from"))
+            seen[rid] = min(at, seen.get(rid, at))
+    return seen
+
+
+def build_cases(events, sample, judgments, read_prompts, skipped=None, visible_from=None):
     """-> Liste der Faelle. `read_prompts(transcript_path)` liefert Zeilen wie
     `corpus.iter_human_prompts`. Faelle ohne Original-Prompt oder Urteil werden
     uebersprungen und, falls `skipped` (Liste) uebergeben ist, mit ihrer case_id
-    dort vermerkt."""
+    dort vermerkt. `visible_from` ({rid: Epoche}, siehe `first_visible`) setzt Positive, die beim
+    Prompt noch nicht sichtbar waren, nach `positives_future`; unbekannte rids bleiben Positive."""
     by_case = {j["case"]: j for j in judgments}
     transcripts = {}
     cases = []
@@ -118,6 +145,11 @@ def build_cases(events, sample, judgments, read_prompts, skipped=None):
         candidates = [] if static else [_strip_candidate(c) for c in judgment.get("candidates") or []]
         positives = _unique(relevant + candidates)
         negatives = _unique(rid for rid, v in verdicts if v == "irrelevant" and rid not in positives)
+        future = []
+        if visible_from is not None:
+            at = float(event["t"])
+            future = [rid for rid in positives if visible_from.get(rid, float("-inf")) > at]
+            positives = [rid for rid in positives if rid not in future]
         cases.append({
             "case_id": cid,
             "ts": _iso_utc(event["t"]),
@@ -126,6 +158,7 @@ def build_cases(events, sample, judgments, read_prompts, skipped=None):
             "prompt": row["prompt"],
             "prev_answer": row.get("prev_assistant") or "",
             "positives": positives,
+            "positives_future": future,
             "negatives": negatives,
             "expect_nothing": not relevant and better in ("no", _STATIC),
             "already_static": static,
@@ -134,16 +167,20 @@ def build_cases(events, sample, judgments, read_prompts, skipped=None):
 
 
 def _candidate(hit, pot):
-    return {"pot": pot, "rid": hit["record_id"], "summary": hit.get("summary"),
-            "snippet": hit.get("snippet") or "", "valid_from": hit.get("valid_from")}
+    return {"pot": pot, "rid": hit["record_id"], "line": v2._candidate_line(hit),
+            "summary": hit.get("summary"), "snippet": hit.get("snippet") or "",
+            "valid_from": hit.get("valid_from")}
 
 
 def pools_for_case(case, search):
     """-> {pot: [Candidate]}. Je Topf eine Suche mit Praefixliste und `as_of` = Prompt-Zeitpunkt
     (Zeitreise: keine Records, die es beim Prompt noch nicht gab). `search(body)` liefert die
     Trefferliste oder None; None bricht laut ab (ein stiller Ausfall sähe wie 'kein Material' aus).
-    Überholte Treffer (`superseded_by`) fallen weg, wiederholte Records zählen einmal, `demote`-Praefixe
-    rücken ans Ende; die cids (l01, s01, c01 ...) werden erst danach vergeben."""
+    Spiegel von `buildPools` (claude-mods, pipeline.ts): Treffer ohne Kennung, ohne Kernsatz oder mit
+    `superseded_by` fallen weg; Varianten mit gleichem Kernsatz (casefold, z. B. dasselbe Learning in
+    mehreren Projekten) zaehlen einmal - es bleibt die mit dem groesseren `valid_from` an der Stelle der
+    ersten; `demote`-Praefixe rücken ans Ende; dann auf `k` gekappt, die cids (l01, s01, c01 ...) werden
+    erst danach vergeben."""
     query = v2.build_query(case["prompt"], case.get("prev_answer") or "")
     pools = {}
     for pot, spec in v2.POTS.items():
@@ -154,17 +191,20 @@ def pools_for_case(case, search):
             hits = search(body)
             if hits is None:
                 raise RuntimeError(f"Suche fehlgeschlagen: Fall {case['case_id']}, Topf {pot}")
-        seen, kept = set(), []
+        by_line = {}
         for hit in hits:
             rid = hit.get("record_id")
-            if not rid or hit.get("superseded_by") or rid in seen:
+            line = v2._candidate_line(hit) if rid else ""
+            if not rid or not line or hit.get("superseded_by"):
                 continue
-            seen.add(rid)
-            kept.append(hit)
+            known = by_line.get(line.casefold())
+            if known is None or (hit.get("valid_from") or "") > (known.get("valid_from") or ""):
+                by_line[line.casefold()] = hit
+        kept = list(by_line.values())
         demote = tuple(spec.get("demote", ()))
         kept.sort(key=lambda h: h["record_id"].startswith(demote))
         pools[pot] = [dict(cid=f"{_CID_LETTER[pot]}{i:02d}", **_candidate(h, pot))
-                      for i, h in enumerate(kept, 1)]
+                      for i, h in enumerate(kept[:spec["k"]], 1)]
     return pools
 
 
@@ -202,7 +242,9 @@ def collect_batch(rows, replies):
     """Gate-Paket + Antworten -> (results, judge_rows, missing). Faelle ohne Antwort landen nur in
     `missing`. Antworten laufen durch `v2.parse_reply` (wie der Mod); kaputte behalten nichts und
     tragen `is_parsed: False`. Gutachter-Zeilen sind blind: nur Prompt-Material und Treffer, kein
-    Topf, keine cid, kein Datum, keine Begruendung des Gates (Anker)."""
+    Topf, keine cid, kein Datum, keine Begruendung des Gates (Anker). Sitzungsanfang wie im Mod:
+    `prev_answer` ist leer (nicht das Telemetrie-Flag `session_start`). Ein Gate-Agent, der `reply`
+    als Objekt statt als Text schreibt, wird nur transportiert (json.dumps), nicht anders gelesen."""
     results, judge, missing = [], [], []
     for row in rows:
         reply = replies.get(row["case_id"])
@@ -210,7 +252,9 @@ def collect_batch(rows, replies):
             missing.append(row["case_id"])
             continue
         pools = row["pools"]
-        parsed = v2.parse_reply(reply, pools, bool(row.get("session_start")))
+        if isinstance(reply, (dict, list)):
+            reply = json.dumps(reply, ensure_ascii=False)
+        parsed = v2.parse_reply(reply, pools, not str(row.get("prev_answer") or ""))
         by_cid = {c["cid"]: c for cands in pools.values() for c in cands}
         kept = {pot: [dict(entry, rid=by_cid[entry["cid"]]["rid"]) for entry in entries]
                 for pot, entries in parsed["kept"].items()}
@@ -236,8 +280,30 @@ def _write_jsonl(path, rows):
     path.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
 
 
+def _files(folder):
+    return sorted(Path(folder).glob("*.jsonl")) if Path(folder).is_dir() else []
+
+
+def _archive_results(bank_dir):
+    """Verschiebt Antworten und Urteile eines frueheren Laufs nach `archive/<UTC>/` (nichts wird geloescht)."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    target = Path(bank_dir) / "archive" / stamp
+    for name in ("gate_out", "judge_out", "judge_batches", "gate_results.jsonl", "summary.json"):
+        src = Path(bank_dir) / name
+        if src.exists():
+            target.mkdir(parents=True, exist_ok=True)
+            src.rename(target / name)
+    return target
+
+
 def _prepare(args, search):
     bank_dir = Path(args.bank_dir)
+    old = _files(bank_dir / "gate_out") + _files(bank_dir / "judge_out")
+    if old and not args.fresh:
+        print(f"{len(old)} Antwort-/Urteilsdateien eines frueheren Laufs in {bank_dir} (gate_out, judge_out): "
+              "ihre cids gehoeren zu den alten Pools und wuerden auf die neuen angewendet. "
+              "Mit --fresh werden sie nach archive/ verschoben und neu gemessen.", file=sys.stderr)
+        return 2
     cases = _read_jsonl(args.cases)
     if search is None:
         from replay.round4 import Daemon
@@ -245,6 +311,10 @@ def _prepare(args, search):
     size = max(1, args.batch_size)
     rows = [gate_row(c, pools_for_case(c, search)) for c in cases]
     out = bank_dir / "gate_batches"
+    if old:
+        print(f"frueherer Lauf archiviert: {_archive_results(bank_dir)}")
+    for stale in _files(out):
+        stale.unlink()
     for n, start in enumerate(range(0, len(rows), size), 1):
         _write_jsonl(out / f"{n:02d}.jsonl", rows[start:start + size])
     print(f"{len(rows)} Faelle -> {out} ({-(-len(rows) // size)} Pakete)")
@@ -253,8 +323,14 @@ def _prepare(args, search):
 
 def _collect(args):
     bank_dir = Path(args.bank_dir)
+    batches = _files(bank_dir / "gate_batches")
+    if not batches:
+        print(f"keine Gate-Pakete in {bank_dir / 'gate_batches'} - erst `prepare` ausfuehren", file=sys.stderr)
+        return 2
+    for stale in _files(bank_dir / "judge_batches"):
+        stale.unlink()
     results, missing, total = [], [], 0
-    for batch in sorted((bank_dir / "gate_batches").glob("*.jsonl")):
+    for batch in batches:
         rows = _read_jsonl(batch)
         total += len(rows)
         out = bank_dir / "gate_out" / batch.name
@@ -337,7 +413,8 @@ def score(cases, kept, labels, owner, judgments=None):
 
 
 def _meets(m):
-    if m["misleading_confirmed"] or m.get("misleading_pending", 0) or m.get("unjudged", 0)             or m.get("unknown_labels", 0):
+    if (m["misleading_confirmed"] or m.get("misleading_pending", 0) or m.get("unjudged", 0)
+            or m.get("unknown_labels", 0)):
         return False
     shares = (m["relevant_share"], m["noise_share"], m["missing_better_share"], m["nothing_correct_share"])
     if any(s is None for s in shares):
@@ -375,7 +452,8 @@ def _score(args):
     res = score(cases, kept, labels, owner, judgments=judgments)
     res["unparsed"] = sum(1 for r in results if not r.get("is_parsed"))
     res["targets"] = TARGETS
-    res["pass"] = {pot: passes(res, pot=pot) for pot in res["pots"]}
+    # Unlesbare Gate-Antworten behalten nichts und fuettern 'nichts richtig': solange es welche gibt, besteht kein Topf.
+    res["pass"] = {pot: res["unparsed"] == 0 and passes(res, pot=pot) for pot in res["pots"]}
     (bank_dir / "summary.json").write_text(json.dumps(res, ensure_ascii=False, indent=2) + "\n",
                                            encoding="utf-8")
     _print_table(res)
@@ -407,7 +485,8 @@ def _load(path):
 
 def _read_transcript(path):
     try:
-        return list(corpus.iter_human_prompts(path))
+        # Ungekappt: der Mod bereinigt die ganze letzte Antwort, erst dann wird gekappt (siehe _context_tail).
+        return list(corpus.iter_human_prompts(path, cap=None))
     except OSError:
         return []
 
@@ -419,11 +498,16 @@ def main(argv=None, search=None):
     b = sub.add_parser("build", help="Faelle bauen")
     b.add_argument("--artifacts", required=True, help="Ordner mit events.json, sample.json, judge/judgments.json")
     b.add_argument("--out", default=str(here / "data" / "bank" / "cases.jsonl"))
+    b.add_argument("--index-metadata", default=None,
+                   help="metadata.json des Atlas-Index-Builds (nur lesen): Positive, die beim Prompt noch "
+                        "nicht sichtbar waren, wandern nach positives_future")
     pr = sub.add_parser("prepare", help="Pools suchen und Gate-Pakete schreiben")
     pr.add_argument("--cases", default=str(here / "data" / "bank" / "cases.jsonl"))
     pr.add_argument("--bank-dir", default=str(here / "data" / "bank"))
     pr.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     pr.add_argument("--timeout", type=float, default=15.0)
+    pr.add_argument("--fresh", action="store_true",
+                    help="Antworten/Urteile eines frueheren Laufs nach archive/ verschieben und neu messen")
     co = sub.add_parser("collect", help="Gate-Antworten einlesen, Gutachter-Pakete schreiben")
     co.add_argument("--bank-dir", default=str(here / "data" / "bank"))
     sc = sub.add_parser("score", help="Gate-Ergebnisse und Gutachter-Urteile gegen die Ziele auswerten")
@@ -439,12 +523,17 @@ def main(argv=None, search=None):
 
     art = Path(args.artifacts)
     skipped = []
+    visible = first_visible(_load(args.index_metadata)) if args.index_metadata else None
     cases = build_cases(_load(art / "events.json"), _load(art / "sample.json"),
-                        _load(art / "judge" / "judgments.json"), _read_transcript, skipped=skipped)
+                        _load(art / "judge" / "judgments.json"), _read_transcript, skipped=skipped,
+                        visible_from=visible)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("".join(json.dumps(c, ensure_ascii=False) + "\n" for c in cases), encoding="utf-8")
     print(f"{len(cases)} Faelle -> {out}")
+    if visible is not None:
+        print(f"Positive nach dem Prompt entstanden (positives_future): "
+              f"{sum(len(c['positives_future']) for c in cases)} in {sum(1 for c in cases if c['positives_future'])} Faellen")
     print(f"uebersprungen: {len(skipped)}" + (f" ({', '.join(skipped)})" if skipped else ""))
     return 0
 
