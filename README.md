@@ -316,6 +316,27 @@ python -m replay.uptake            # Nutzung: greift Claude eingespielte Treffer
   Kalibrierung Batch 1: 13/15 Übereinstimmung mit Agent-Urteil bei "2 vs.
   nicht 2" — tendenziell etwas großzügig, für Varianten-Vergleiche tauglich.
 
+## Messbank v2 (seit 2026-10-19)
+Misst Prelude v2 vor dem Scharfschalten gegen Spec §8
+(`docs/superpowers/specs/2026-10-19-prelude-einspielen-design.md`).
+
+```
+python -m replay.bank build --artifacts <recon-ordner> --index-metadata <atlas-build>/metadata.json
+python -m replay.bank prepare      # Pools je Topf mit as_of suchen, Gate-Pakete schreiben (braucht den erweiterten Daemon)
+#   -> je Paket EIN Haiku-Subagent mit replay/GATE_V2_BRIEF.md
+python -m replay.bank collect      # Gate-Antworten einlesen, Gutachter-Pakete schreiben
+#   -> je Paket EIN Opus-Subagent mit replay/JUDGE_V2_BRIEF.md
+python -m replay.bank score        # Tabelle je Topf gegen die Ziele
+```
+
+- **`--index-metadata` immer mitgeben:** ohne zählen Positive, die beim Prompt
+  noch nicht im Index sichtbar waren, als Fehlgriff, den das Gate nie vermeiden
+  konnte.
+- **Erneut messen:** `prepare --fresh` verschiebt Antworten und Urteile des
+  vorigen Laufs nach `archive/<UTC>/`; ohne `--fresh` bricht `prepare` ab, sobald
+  Antworten liegen.
+- Fälle, Antworten und Urteile liegen in `replay/data/bank/` — **gitignored** (volle Prompts).
+
 ## Daemon-Keepalive (Idee 8, seit 2026-09-28)
 `tools/daemon_keepalive.py` schickt alle 5 Minuten ein Mini-`/search` an den
 Atlas-Daemon (User-Task `Prelude-Atlas-Keepalive`, pythonw, nur bei Anmeldung).
