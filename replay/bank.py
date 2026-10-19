@@ -44,6 +44,8 @@ DEFAULT_BATCH_SIZE = 10
 # Spec §8 (Erfolg gegenueber heute): relevant > , Rauschen < , fehlend-besser < , nichts-richtig >= .
 TARGETS = {"relevant_share": 0.50, "noise_share": 0.15, "missing_better_share": 0.20,
            "nothing_correct_share": 0.80}
+# Wortschatz der Gutachter-Labels (JUDGE_V2_BRIEF); alles andere gilt als unbekannt und blockiert.
+LABELS = frozenset({"relevant", "marginal", "noise", "duplicate", "misleading"})
 DEFAULT_JUDGMENTS = Path.home() / "AI" / "artifacts" / "atlas-injection-recon" / "judge" / "judgments.json"
 
 
@@ -303,14 +305,16 @@ def score(cases, kept, labels, owner, judgments=None):
     gate_results.jsonl passen direkt); labels: {(case_id, rid): Gutachter-Label}; owner:
     {(case_id, rid): bestaetigt?}. Nur Faelle mit Gate-Ergebnis zaehlen. Anteile ohne Nenner sind
     None (nicht messbar). Behaltene Eintraege ohne Label bleiben aus den Anteilen heraus und stehen
-    in `unjudged`. `misleading_pending` = vom Gutachter markiert, vom Owner noch nicht gesichtet."""
+    in `unjudged`; Eintraege mit einem Label ausserhalb von LABELS (z. B. das alte `irrelevant`)
+    ebenso, gezaehlt in `unknown_labels`. `misleading_pending` = vom Gutachter markiert, vom Owner noch nicht gesichtet."""
     measured = [c for c in cases if c["case_id"] in kept]
     ids = {c["case_id"] for c in measured}
     pots = {}
     for pot in v2.POTS:
         entries = [(cid, _kept_rid(e)) for cid, by_pot in kept.items() if cid in ids
                    for e in by_pot.get(pot, [])]
-        judged = [k for k in entries if k in labels]
+        unknown = [k for k in entries if k in labels and labels[k] not in LABELS]
+        judged = [k for k in entries if k in labels and labels[k] in LABELS]
         count = Counter(labels[k] for k in judged)
         flagged = [k for k in judged if labels[k] == "misleading"]
         with_positive = [c for c in measured if any(pot_of(p) == pot for p in c.get("positives") or [])]
@@ -319,7 +323,8 @@ def score(cases, kept, labels, owner, judgments=None):
         expect = [c for c in measured if c.get("expect_nothing")]
         quiet = [c for c in expect if not kept[c["case_id"]].get(pot)]
         pots[pot] = {
-            "n_kept": len(entries), "n_judged": len(judged), "unjudged": len(entries) - len(judged),
+            "n_kept": len(entries), "n_judged": len(judged), "unjudged": sum(1 for k in entries if k not in labels),
+            "unknown_labels": len(unknown),
             "relevant_share": _share(count["relevant"], len(judged)),
             "noise_share": _share(count["noise"], len(judged)),
             "missing_better_share": _share(len(missing), len(with_positive)),
@@ -332,7 +337,7 @@ def score(cases, kept, labels, owner, judgments=None):
 
 
 def _meets(m):
-    if m["misleading_confirmed"] or m.get("misleading_pending", 0) or m.get("unjudged", 0):
+    if m["misleading_confirmed"] or m.get("misleading_pending", 0) or m.get("unjudged", 0)             or m.get("unknown_labels", 0):
         return False
     shares = (m["relevant_share"], m["noise_share"], m["missing_better_share"], m["nothing_correct_share"])
     if any(s is None for s in shares):
@@ -345,7 +350,7 @@ def _meets(m):
 def passes(result, pot=None):
     """Spec §8 exakt: relevant > 0,50, Rauschen < 0,15, fehlend-besser < 0,20, 'nichts' richtig
     >= 0,80, irrefuehrend bestaetigt == 0 (ein noch ungesichtetes Gutachter-'misleading' und
-    ungelabelte Eintraege blockieren ebenfalls). `result` ist die Kennzahlen eines Topfs oder das
+    ungelabelte oder unbekannt gelabelte Eintraege blockieren ebenfalls). `result` ist die Kennzahlen eines Topfs oder das
     Ergebnis von `score`; dann gilt `pot`, ohne Angabe alle Toepfe."""
     if "pots" not in result:
         return _meets(result)
@@ -390,8 +395,8 @@ def _print_table(res):
     for key, name, goal in rows:
         print(f"{name:<22}{_pct(base.get(key)):>7}{goal:>9}" + "".join(f"{_pct(m[key]):>14}" for m in pots.values()))
     for key, name in (("misleading_confirmed", "irrefuehrend (Owner)"), ("misleading_pending", "irrefuehrend offen"),
-                      ("unjudged", "ohne Urteil")):
-        print(f"{name:<22}{'':>7}{('0' if key != 'unjudged' else ''):>9}"
+                      ("unjudged", "ohne Urteil"), ("unknown_labels", "unbekanntes Label")):
+        print(f"{name:<22}{'':>7}{('0' if key not in ('unjudged', 'unknown_labels') else ''):>9}"
               + "".join(f"{m[key]:>14}" for m in pots.values()))
     print(f"{'bestanden':<22}{'':>7}{'':>9}" + "".join(f"{('ja' if res['pass'][p] else 'nein'):>14}" for p in pots))
 

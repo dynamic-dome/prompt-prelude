@@ -465,6 +465,24 @@ class TestScore:
         lrn = bank.score(cases, kept, labels, {})["pots"]["learnings"]
         assert lrn["relevant_share"] == 1 / 3 and lrn["noise_share"] == 0.0
 
+    def test_unknown_label_is_counted_apart_and_blocks_a_pass(self):
+        # Das alte judgments.json kennt `irrelevant`; ein solches Label darf nicht still als
+        # "beurteilt, aber weder relevant noch Rauschen" durchgehen.
+        cases = [_scase("A", [L1]), _scase("B", expect_nothing=True)]
+        kept = {"A": {"learnings": [L1, L2, N1], "skills": [], "capabilities": []},
+                "B": {"learnings": [], "skills": [], "capabilities": []}}
+        labels = {("A", L1): "relevant", ("A", L2): "relevant", ("A", N1): "irrelevant"}
+        lrn = bank.score(cases, kept, labels, {})["pots"]["learnings"]
+        assert (lrn["unknown_labels"], lrn["unjudged"], lrn["n_judged"], lrn["n_kept"]) == (1, 0, 2, 3)
+        assert lrn["relevant_share"] == 1.0 and lrn["noise_share"] == 0.0   # sieht gut aus, ist es nicht
+        assert bank.passes(lrn) is False
+        labels[("A", N1)] = "noise"      # gueltig gelabelt: Rauschen 1/3 -> auch nicht bestanden
+        fixed = bank.score(cases, kept, labels, {})["pots"]["learnings"]
+        assert fixed["unknown_labels"] == 0 and fixed["noise_share"] == 1 / 3 and bank.passes(fixed) is False
+        labels[("A", N1)] = "marginal"   # gueltig, weder relevant noch Rauschen -> bestanden (2/3 > 0,50)
+        ok = bank.score(cases, kept, labels, {})["pots"]["learnings"]
+        assert ok["unknown_labels"] == 0 and bank.passes(ok) is True
+
     def test_baseline_from_judgments(self):
         judgments = [{"case": "X", "better_missing": "yes", "candidates": [],
                       "items": [{"record_id": "r1", "verdict": "relevant"},
@@ -479,7 +497,8 @@ class TestScore:
 
 
 GOOD = {"relevant_share": 0.51, "noise_share": 0.14, "missing_better_share": 0.19,
-        "nothing_correct_share": 0.80, "misleading_confirmed": 0, "misleading_pending": 0, "unjudged": 0}
+        "nothing_correct_share": 0.80, "misleading_confirmed": 0, "misleading_pending": 0, "unjudged": 0,
+        "unknown_labels": 0}
 
 
 class TestPasses:
@@ -508,14 +527,22 @@ class TestPasses:
         # Gutachter markiert, Owner hat noch nicht gesichtet -> blockiert
         pending = bank.score(cases, kept, labels, {})["pots"]["learnings"]
         assert (pending["misleading_confirmed"], pending["misleading_pending"]) == (0, 1)
-        assert bank.passes({**relevant, **{k: pending[k] for k in ("misleading_confirmed", "misleading_pending")}}) is False
+        assert bank.passes(pending) is False
         # Owner bestaetigt -> blockiert
         confirmed = bank.score(cases, kept, labels, {("A", L1): True})["pots"]["learnings"]
         assert (confirmed["misleading_confirmed"], confirmed["misleading_pending"]) == (1, 0)
-        assert bank.passes({**relevant, "misleading_confirmed": 1}) is False
+        assert bank.passes(confirmed) is False
         # Owner entlastet: weder bestaetigt noch offen
         cleared = bank.score(cases, kept, labels, {("A", L1): False})["pots"]["learnings"]
         assert (cleared["misleading_confirmed"], cleared["misleading_pending"]) == (0, 0)
+        # Entlastet und genug relevante Eintraege -> der Topf besteht wieder (aus score(), nicht handgepatcht)
+        kept["A"]["learnings"] = [L1, L2, N1]
+        labels3 = {("A", L1): "relevant", ("A", L2): "relevant", ("A", N1): "misleading"}
+        res = bank.score(cases, kept, labels3, {("A", N1): False})
+        assert res["pots"]["learnings"]["relevant_share"] == 2 / 3
+        assert bank.passes(res, pot="learnings") is True
+        assert bank.passes(bank.score(cases, kept, labels3, {}), pot="learnings") is False           # offen
+        assert bank.passes(bank.score(cases, kept, labels3, {("A", N1): True}), pot="learnings") is False
 
     def test_misleading_gate_decides_a_full_score_result(self):
         cases = [_scase("A", [L1]), _scase("B", expect_nothing=True)]
