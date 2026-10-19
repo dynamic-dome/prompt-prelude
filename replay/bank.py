@@ -19,11 +19,14 @@ Gold-Regeln:
 `prepare` sucht je Fall und Topf die Kandidaten (Zeitreise `as_of` = Prompt-Zeitpunkt) und
 schreibt Gate-Pakete `gate_batches/NN.jsonl` ohne Gold-Labels. `collect` liest die Antworten
 der Gate-Agenten (`gate_out/NN.jsonl`), parst sie wie der Mod und schreibt `gate_results.jsonl`
-plus blinde Gutachter-Pakete `judge_batches/NN.jsonl`.
+plus blinde Gutachter-Pakete `judge_batches/NN.jsonl`. `score` wertet Gate-Ergebnisse, Gutachter-Urteile
+(`judge_out/*.jsonl`) und Owner-Bestaetigungen (`owner_misleading.jsonl`) je Topf gegen die Ziele aus
+Spec §8 aus und schreibt `summary.json`.
 """
 import argparse
 import json
 import re
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -38,6 +41,10 @@ _SUFFIX_RE = re.compile(r"\s+\(.*\)\s*$")
 _CID_LETTER = {"learnings": "l", "skills": "s", "capabilities": "c"}
 BANK_CALLER = "prelude-bank"
 DEFAULT_BATCH_SIZE = 10
+# Spec §8 (Erfolg gegenueber heute): relevant > , Rauschen < , fehlend-besser < , nichts-richtig >= .
+TARGETS = {"relevant_share": 0.50, "noise_share": 0.15, "missing_better_share": 0.20,
+           "nothing_correct_share": 0.80}
+DEFAULT_JUDGMENTS = Path.home() / "AI" / "artifacts" / "atlas-injection-recon" / "judge" / "judgments.json"
 
 
 def _iso_utc(epoch):
@@ -263,6 +270,132 @@ def _collect(args):
     return 0
 
 
+def pot_of(rid):
+    """Topf einer record_id nach den Praefixen von `v2.POTS`; sonst None."""
+    for pot, spec in v2.POTS.items():
+        if str(rid).startswith(tuple(spec["prefixes"])):
+            return pot
+    return None
+
+
+def _kept_rid(entry):
+    return entry if isinstance(entry, str) else entry["rid"]
+
+
+def _share(num, den):
+    return num / den if den else None
+
+
+def baseline_from(judgments):
+    """Kennzahlen des alten Hooks aus `judgments.json` (Plaetze: Verdikt relevant / irrelevant;
+    Faelle: `better_missing == yes`). Spec §8 nennt 8 % / 63 % / 56 %."""
+    items = [i["verdict"] for j in judgments for i in j.get("items") or []]
+    return {"relevant_share": _share(items.count("relevant"), len(items)),
+            "noise_share": _share(items.count("irrelevant"), len(items)),
+            "missing_better_share": _share(sum(1 for j in judgments if j.get("better_missing") == "yes"),
+                                           len(judgments))}
+
+
+def score(cases, kept, labels, owner, judgments=None):
+    """Messbank-Auswertung je Topf.
+
+    cases: Faelle aus `build`; kept: {case_id: {pot: [rid | {"rid": ...}]}} (Zeilen von
+    gate_results.jsonl passen direkt); labels: {(case_id, rid): Gutachter-Label}; owner:
+    {(case_id, rid): bestaetigt?}. Nur Faelle mit Gate-Ergebnis zaehlen. Anteile ohne Nenner sind
+    None (nicht messbar). Behaltene Eintraege ohne Label bleiben aus den Anteilen heraus und stehen
+    in `unjudged`. `misleading_pending` = vom Gutachter markiert, vom Owner noch nicht gesichtet."""
+    measured = [c for c in cases if c["case_id"] in kept]
+    ids = {c["case_id"] for c in measured}
+    pots = {}
+    for pot in v2.POTS:
+        entries = [(cid, _kept_rid(e)) for cid, by_pot in kept.items() if cid in ids
+                   for e in by_pot.get(pot, [])]
+        judged = [k for k in entries if k in labels]
+        count = Counter(labels[k] for k in judged)
+        flagged = [k for k in judged if labels[k] == "misleading"]
+        with_positive = [c for c in measured if any(pot_of(p) == pot for p in c.get("positives") or [])]
+        missing = [c for c in with_positive
+                   if not set(c["positives"]) & {_kept_rid(e) for e in kept[c["case_id"]].get(pot, [])}]
+        expect = [c for c in measured if c.get("expect_nothing")]
+        quiet = [c for c in expect if not kept[c["case_id"]].get(pot)]
+        pots[pot] = {
+            "n_kept": len(entries), "n_judged": len(judged), "unjudged": len(entries) - len(judged),
+            "relevant_share": _share(count["relevant"], len(judged)),
+            "noise_share": _share(count["noise"], len(judged)),
+            "missing_better_share": _share(len(missing), len(with_positive)),
+            "nothing_correct_share": _share(len(quiet), len(expect)),
+            "misleading_confirmed": sum(1 for k in flagged if owner.get(k) is True),
+            "misleading_pending": sum(1 for k in flagged if k not in owner),
+        }
+    return {"n_cases": len(measured), "pots": pots,
+            "baseline": baseline_from(judgments) if judgments is not None else None}
+
+
+def _meets(m):
+    if m["misleading_confirmed"] or m.get("misleading_pending", 0) or m.get("unjudged", 0):
+        return False
+    shares = (m["relevant_share"], m["noise_share"], m["missing_better_share"], m["nothing_correct_share"])
+    if any(s is None for s in shares):
+        return False
+    relevant, noise, missing, nothing = shares
+    return relevant > TARGETS["relevant_share"] and noise < TARGETS["noise_share"] \
+        and missing < TARGETS["missing_better_share"] and nothing >= TARGETS["nothing_correct_share"]
+
+
+def passes(result, pot=None):
+    """Spec §8 exakt: relevant > 0,50, Rauschen < 0,15, fehlend-besser < 0,20, 'nichts' richtig
+    >= 0,80, irrefuehrend bestaetigt == 0 (ein noch ungesichtetes Gutachter-'misleading' und
+    ungelabelte Eintraege blockieren ebenfalls). `result` ist die Kennzahlen eines Topfs oder das
+    Ergebnis von `score`; dann gilt `pot`, ohne Angabe alle Toepfe."""
+    if "pots" not in result:
+        return _meets(result)
+    chosen = [pot] if pot else list(result["pots"])
+    return all(_meets(result["pots"][p]) for p in chosen)
+
+
+def _score(args):
+    bank_dir = Path(args.bank_dir)
+    cases = _read_jsonl(bank_dir / "cases.jsonl")
+    results = _read_jsonl(bank_dir / "gate_results.jsonl")
+    kept = {r["case_id"]: r["kept"] for r in results}
+    labels = {}
+    for batch in sorted((bank_dir / "judge_out").glob("*.jsonl")):
+        for r in _read_jsonl(batch):
+            labels[(r["case_id"], r["rid"])] = r["label"]
+    owner_file = bank_dir / "owner_misleading.jsonl"
+    owner = {(r["case_id"], r["rid"]): bool(r["confirmed"]) for r in _read_jsonl(owner_file)} \
+        if owner_file.exists() else {}
+    judgments_file = Path(args.judgments)
+    judgments = _load(judgments_file) if judgments_file.exists() else None
+    res = score(cases, kept, labels, owner, judgments=judgments)
+    res["unparsed"] = sum(1 for r in results if not r.get("is_parsed"))
+    res["targets"] = TARGETS
+    res["pass"] = {pot: passes(res, pot=pot) for pot in res["pots"]}
+    (bank_dir / "summary.json").write_text(json.dumps(res, ensure_ascii=False, indent=2) + "\n",
+                                           encoding="utf-8")
+    _print_table(res)
+    return 0
+
+
+def _pct(value):
+    return "-" if value is None else f"{value * 100:.0f} %"
+
+
+def _print_table(res):
+    pots, base = res["pots"], res["baseline"] or {}
+    print(f"{res['n_cases']} Faelle ausgewertet, {res['unparsed']} Antworten nicht lesbar")
+    print(f"{'Kennzahl':<22}{'heute':>7}{'Ziel':>9}" + "".join(f"{p:>14}" for p in pots))
+    rows = (("relevant_share", "relevant", "> 50 %"), ("noise_share", "Rauschen", "< 15 %"),
+            ("missing_better_share", "fehlend besser", "< 20 %"), ("nothing_correct_share", "nichts richtig", ">= 80 %"))
+    for key, name, goal in rows:
+        print(f"{name:<22}{_pct(base.get(key)):>7}{goal:>9}" + "".join(f"{_pct(m[key]):>14}" for m in pots.values()))
+    for key, name in (("misleading_confirmed", "irrefuehrend (Owner)"), ("misleading_pending", "irrefuehrend offen"),
+                      ("unjudged", "ohne Urteil")):
+        print(f"{name:<22}{'':>7}{('0' if key != 'unjudged' else ''):>9}"
+              + "".join(f"{m[key]:>14}" for m in pots.values()))
+    print(f"{'bestanden':<22}{'':>7}{'':>9}" + "".join(f"{('ja' if res['pass'][p] else 'nein'):>14}" for p in pots))
+
+
 def _load(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
 
@@ -288,11 +421,16 @@ def main(argv=None, search=None):
     pr.add_argument("--timeout", type=float, default=15.0)
     co = sub.add_parser("collect", help="Gate-Antworten einlesen, Gutachter-Pakete schreiben")
     co.add_argument("--bank-dir", default=str(here / "data" / "bank"))
+    sc = sub.add_parser("score", help="Gate-Ergebnisse und Gutachter-Urteile gegen die Ziele auswerten")
+    sc.add_argument("--bank-dir", default=str(here / "data" / "bank"))
+    sc.add_argument("--judgments", default=str(DEFAULT_JUDGMENTS), help="judgments.json fuer die Baseline (optional)")
     args = ap.parse_args(argv)
     if args.cmd == "prepare":
         return _prepare(args, search)
     if args.cmd == "collect":
         return _collect(args)
+    if args.cmd == "score":
+        return _score(args)
 
     art = Path(args.artifacts)
     skipped = []

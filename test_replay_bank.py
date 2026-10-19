@@ -404,3 +404,163 @@ class TestMakeSearch:
         assert sent == [("http://daemon.invalid/search", body, 7.0)]
         assert search({"query": "boom"}) is None
         assert (daemon.calls, daemon.failures) == (2, 1)
+
+
+# --- B5: Auswertung gegen die Ziele -------------------------------------------
+
+L1, L2, N1, N2 = ("agent-memory/a/learnings/L1", "agent-memory/a/learnings/L2",
+                  "native-x/n1", "native-x/n2")
+S1 = "atlas/skill:foo"
+
+
+def _scase(cid, positives=(), expect_nothing=False):
+    return {"case_id": cid, "positives": list(positives), "negatives": [], "expect_nothing": expect_nothing}
+
+
+def _toy():
+    cases = [_scase("A", [L1, L2]), _scase("B", expect_nothing=True),
+             _scase("C", expect_nothing=True), _scase("D", [S1])]
+    kept = {"A": {"learnings": [{"cid": "l01", "why": "w", "rid": L1}, {"cid": "l02", "why": "w", "rid": N1}],
+                  "skills": [], "capabilities": []},
+            "B": {"learnings": [], "skills": [], "capabilities": []},
+            "C": {"learnings": [N2], "skills": [], "capabilities": []},
+            "D": {"learnings": [], "skills": [], "capabilities": []}}
+    labels = {("A", L1): "relevant", ("A", N1): "noise", ("C", N2): "noise"}
+    return cases, kept, labels
+
+
+class TestScore:
+    def test_score_shares_on_toy_data(self):
+        cases, kept, labels = _toy()
+        res = bank.score(cases, kept, labels, {})
+        lrn, skl, cap = res["pots"]["learnings"], res["pots"]["skills"], res["pots"]["capabilities"]
+        assert lrn["relevant_share"] == 1 / 3 and lrn["noise_share"] == 2 / 3
+        assert lrn["missing_better_share"] == 0.0      # Fall A: L1 behalten
+        assert lrn["nothing_correct_share"] == 0.5     # B richtig, C nicht
+        assert (lrn["n_kept"], lrn["unjudged"], lrn["misleading_confirmed"]) == (3, 0, 0)
+        assert skl["relevant_share"] is None and skl["noise_share"] is None   # nichts behalten, nichts zu messen
+        assert skl["missing_better_share"] == 1.0      # Fall D hat ein Positiv, nichts behalten
+        assert skl["nothing_correct_share"] == 1.0
+        assert cap["missing_better_share"] is None     # kein Fall mit Capability-Positiv
+        assert res["baseline"] is None
+
+    def test_cases_without_gate_result_are_not_measured(self):
+        cases, kept, labels = _toy()
+        del kept["D"]
+        res = bank.score(cases, kept, labels, {})
+        assert res["pots"]["skills"]["missing_better_share"] is None
+        assert res["n_cases"] == 3
+
+    def test_unjudged_entries_are_counted_and_stay_out_of_shares(self):
+        cases, kept, labels = _toy()
+        del labels[("C", N2)]
+        lrn = bank.score(cases, kept, labels, {})["pots"]["learnings"]
+        assert lrn["unjudged"] == 1 and lrn["n_judged"] == 2
+        assert lrn["relevant_share"] == 0.5 and lrn["noise_share"] == 0.5
+
+    def test_marginal_and_duplicate_are_neither_relevant_nor_noise(self):
+        cases, kept, labels = _toy()
+        labels[("A", N1)] = "marginal"
+        labels[("C", N2)] = "duplicate"
+        lrn = bank.score(cases, kept, labels, {})["pots"]["learnings"]
+        assert lrn["relevant_share"] == 1 / 3 and lrn["noise_share"] == 0.0
+
+    def test_baseline_from_judgments(self):
+        judgments = [{"case": "X", "better_missing": "yes", "candidates": [],
+                      "items": [{"record_id": "r1", "verdict": "relevant"},
+                                {"record_id": "r2", "verdict": "irrelevant"}]},
+                     {"case": "Y", "better_missing": "no", "candidates": [],
+                      "items": [{"record_id": "r3", "verdict": "irrelevant"},
+                                {"record_id": "r4", "verdict": "marginal"}]}]
+        base = bank.baseline_from(judgments)
+        assert base == {"relevant_share": 0.25, "noise_share": 0.5, "missing_better_share": 0.5}
+        cases, kept, labels = _toy()
+        assert bank.score(cases, kept, labels, {}, judgments=judgments)["baseline"] == base
+
+
+GOOD = {"relevant_share": 0.51, "noise_share": 0.14, "missing_better_share": 0.19,
+        "nothing_correct_share": 0.80, "misleading_confirmed": 0, "misleading_pending": 0, "unjudged": 0}
+
+
+class TestPasses:
+    def test_passes_thresholds_exactly_at_boundaries(self):
+        assert bank.passes(GOOD) is True
+        assert bank.passes({**GOOD, "relevant_share": 0.50}) is False      # strikt >
+        assert bank.passes({**GOOD, "noise_share": 0.15}) is False         # strikt <
+        assert bank.passes({**GOOD, "missing_better_share": 0.20}) is False  # strikt <
+        assert bank.passes({**GOOD, "nothing_correct_share": 0.80}) is True  # >=
+        assert bank.passes({**GOOD, "nothing_correct_share": 0.79}) is False
+        assert bank.passes({**GOOD, "misleading_confirmed": 1}) is False
+
+    def test_unmeasurable_or_unjudged_does_not_pass(self):
+        for key in ("relevant_share", "noise_share", "missing_better_share", "nothing_correct_share"):
+            assert bank.passes({**GOOD, key: None}) is False
+        assert bank.passes({**GOOD, "unjudged": 1}) is False
+
+    def test_unconfirmed_misleading_blocks_until_owner_confirms_or_clears(self):
+        # Ein Fall mit einem Positiv (L1) und ein expect_nothing-Fall; Gate behaelt L1 bzw. nichts.
+        cases = [_scase("A", [L1]), _scase("B", expect_nothing=True)]
+        kept = {"A": {"learnings": [L1], "skills": [], "capabilities": []},
+                "B": {"learnings": [], "skills": [], "capabilities": []}}
+        relevant = bank.score(cases, kept, {("A", L1): "relevant"}, {})["pots"]["learnings"]
+        assert bank.passes(relevant) is True
+        labels = {("A", L1): "misleading"}
+        # Gutachter markiert, Owner hat noch nicht gesichtet -> blockiert
+        pending = bank.score(cases, kept, labels, {})["pots"]["learnings"]
+        assert (pending["misleading_confirmed"], pending["misleading_pending"]) == (0, 1)
+        assert bank.passes({**relevant, **{k: pending[k] for k in ("misleading_confirmed", "misleading_pending")}}) is False
+        # Owner bestaetigt -> blockiert
+        confirmed = bank.score(cases, kept, labels, {("A", L1): True})["pots"]["learnings"]
+        assert (confirmed["misleading_confirmed"], confirmed["misleading_pending"]) == (1, 0)
+        assert bank.passes({**relevant, "misleading_confirmed": 1}) is False
+        # Owner entlastet: weder bestaetigt noch offen
+        cleared = bank.score(cases, kept, labels, {("A", L1): False})["pots"]["learnings"]
+        assert (cleared["misleading_confirmed"], cleared["misleading_pending"]) == (0, 0)
+
+    def test_misleading_gate_decides_a_full_score_result(self):
+        cases = [_scase("A", [L1]), _scase("B", expect_nothing=True)]
+        kept = {"A": {"learnings": [L1], "skills": [], "capabilities": []},
+                "B": {"learnings": [], "skills": [], "capabilities": []}}
+        # Ein Treffer relevant, der zweite vom Gutachter als irrefuehrend markiert.
+        kept["A"]["learnings"] = [L1, L2]
+        labels = {("A", L1): "relevant", ("A", L2): "relevant"}
+        assert bank.passes(bank.score(cases, kept, labels, {}), pot="learnings") is True
+        labels[("A", L2)] = "misleading"
+        res = bank.score(cases, kept, labels, {})
+        assert bank.passes(res, pot="learnings") is False                       # offen
+        res = bank.score(cases, kept, labels, {("A", L2): True})
+        assert bank.passes(res, pot="learnings") is False                       # bestaetigt
+        res = bank.score(cases, kept, labels, {("A", L2): False})
+        assert res["pots"]["learnings"]["relevant_share"] == 0.5
+        assert bank.passes(res, pot="learnings") is False                       # 0,50 ist nicht > 0,50
+
+    def test_score_result_is_checked_per_pot_or_for_all_pots(self):
+        cases, kept, labels = _toy()
+        res = bank.score(cases, kept, labels, {})
+        assert bank.passes(res) is False and bank.passes(res, pot="learnings") is False
+        res["pots"]["learnings"] = dict(GOOD)
+        assert bank.passes(res, pot="learnings") is True
+        assert bank.passes(res) is False    # Skills/Capabilities erreichen die Ziele nicht
+
+
+class TestScoreCli:
+    def test_score_cli_writes_summary_and_prints_table(self, tmp_path, capsys):
+        bank_dir = tmp_path / "bank"
+        cases, kept, _ = _toy()
+        bank._write_jsonl(bank_dir / "cases.jsonl", cases)
+        bank._write_jsonl(bank_dir / "gate_results.jsonl",
+                          [{"case_id": cid, "kept": k, "clarify": "", "is_parsed": cid != "B"}
+                           for cid, k in kept.items()])
+        bank._write_jsonl(bank_dir / "judge_out" / "01.jsonl",
+                          [{"case_id": "A", "rid": L1, "label": "relevant", "why": "x"},
+                           {"case_id": "A", "rid": N1, "label": "misleading", "why": "x"},
+                           {"case_id": "C", "rid": N2, "label": "noise", "why": "x"}])
+        bank._write_jsonl(bank_dir / "owner_misleading.jsonl", [{"case_id": "A", "rid": N1, "confirmed": False}])
+        assert bank.main(["score", "--bank-dir", str(bank_dir), "--judgments", str(tmp_path / "none.json")]) == 0
+        summary = json.loads((bank_dir / "summary.json").read_text(encoding="utf-8"))
+        lrn = summary["pots"]["learnings"]
+        assert lrn["relevant_share"] == 1 / 3 and lrn["misleading_confirmed"] == 0
+        assert summary["pass"] == {"learnings": False, "skills": False, "capabilities": False}
+        assert summary["unparsed"] == 1 and summary["baseline"] is None
+        out = capsys.readouterr().out
+        assert "learnings" in out and "skills" in out and "relevant" in out
