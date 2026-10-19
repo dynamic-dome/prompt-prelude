@@ -72,8 +72,8 @@ _POSIX_PATH_RE = re.compile(
 _SPACE_RE = re.compile(r"\s+")
 
 
-def clean_text(text):
-    """Pfade, URLs, Code-Bloecke, Inline-Code und Stack-Trace-Zeilen raus; auf PROMPT_CAP gekappt."""
+def _strip_noise(text):
+    """Pfade, URLs, Code-Bloecke, Inline-Code und Stack-Trace-Zeilen raus; Leerraum zusammengezogen, ungekappt."""
     t = _FENCE_RE.sub(" ", str(text))
     t = _OPEN_FENCE_RE.sub(" ", t)
     t = _INLINE_CODE_RE.sub(" ", t)
@@ -82,7 +82,25 @@ def clean_text(text):
     t = _WIN_QUOTED_RE.sub(" ", t)
     t = _WIN_PATH_RE.sub(" ", t)
     t = _POSIX_PATH_RE.sub(" ", t)
-    return _SPACE_RE.sub(" ", t).strip()[:PROMPT_CAP].rstrip()
+    return _SPACE_RE.sub(" ", t).strip()
+
+
+def clean_text(text):
+    """Pfade, URLs, Code-Bloecke, Inline-Code und Stack-Trace-Zeilen raus; auf PROMPT_CAP gekappt."""
+    return _strip_noise(text)[:PROMPT_CAP].rstrip()
+
+
+def _context_tail(prev_answer):
+    """Letzte CONTEXT_CAP Zeichen der BEREINIGTEN Antwort (erst bereinigen, dann kappen, sonst liest
+    ein Schnitt im Code-Block das schliessende ``` als offenen Zaun). Ungekappte Bereinigung, damit
+    das Ende der Antwort bleibt. Beginnt der Schnitt mitten im Wort, faellt dieses Bruchstueck weg."""
+    cleaned = _strip_noise(prev_answer)
+    if len(cleaned) <= CONTEXT_CAP:
+        return cleaned
+    tail = cleaned[-CONTEXT_CAP:]
+    if not cleaned[-CONTEXT_CAP - 1].isspace():
+        tail = _SPACE_RE.sub(" ", tail).split(" ", 1)[1] if " " in tail else ""
+    return tail
 
 
 def _is_sentence_start(text, pos):
@@ -114,10 +132,11 @@ def key_terms(text, limit=QUERY_TERMS_MAX):
 
 def build_query(prompt, prev_answer):
     """Anfrage fuer den Atlas-Daemon: Begriffe des Prompts plus bis zu 3 neue aus dem Ende
-    der letzten Antwort. Leer, wenn es keine Begriffe gibt."""
+    der letzten Antwort (Reihenfolge: bereinigen, dann die letzten CONTEXT_CAP Zeichen; der TS-Spiegel
+    muss sie einhalten). Leer, wenn es keine Begriffe gibt."""
     terms = key_terms(clean_text(prompt))
     have = {t.casefold() for t in terms}
-    tail = clean_text(str(prev_answer)[-CONTEXT_CAP:])
+    tail = _context_tail(prev_answer)
     extra = [t for t in key_terms(tail, QUERY_TERMS_MAX + _PREV_TERMS) if t.casefold() not in have]
     return " ".join(terms + extra[:_PREV_TERMS])
 

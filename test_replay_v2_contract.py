@@ -111,6 +111,35 @@ class TestBuildQuery:
         q = v2.build_query("ok", prev)
         assert "Endbegriff" in q and "Urzeitbegriff" not in q
 
+    def test_cut_inside_a_code_block_keeps_the_closing_prose(self):
+        # Der Schnitt auf die letzten 600 Zeichen faellt in den Code-Block: erst bereinigen, dann kappen.
+        code = "".join(f"zzcode_{i:03d} = {i}\n" for i in range(40))
+        full = "Text ```py\n" + code + "```\nFazit: der Netzwächter blockiert getaddrinfo"
+        assert len(full) > v2.CONTEXT_CAP
+        assert full[-v2.CONTEXT_CAP:].count("```") == 1  # roher Schnitt: nur der schliessende Zaun
+        q = v2.build_query("ok", full)
+        assert "Netzwächter" in q.split() and "getaddrinfo" in q.split()
+        assert not any(t.startswith("zzcode") for t in q.split())
+
+    def test_cut_inside_a_word_drops_the_fragment(self):
+        prev = "Isolationsguard " + "abc " * 146 + "abcd"
+        assert len(prev) == v2.CONTEXT_CAP + 4  # der Schnitt faellt nach "Isol" in das erste Wort
+        q = v2.build_query("ok", prev)
+        assert not any("onsguard" in t for t in q.split())  # kein Wortrest
+        assert set(q.split()) <= {"abc", "abcd"}
+
+    def test_cut_on_a_word_boundary_keeps_the_first_word(self):
+        prev = "Vorspann Zielbegriff " + "abc " * 146 + "abcd"
+        assert len(prev) == v2.CONTEXT_CAP + 9  # der Schnitt faellt genau vor "Zielbegriff"
+        q = v2.build_query("ok", prev)
+        assert "Zielbegriff" in q.split() and "Vorspann" not in q.split()
+
+    def test_long_previous_answer_keeps_its_end_not_its_start(self):
+        # clean_text kappt auf PROMPT_CAP von vorn; fuer den Kontext darf das das Ende nicht kosten.
+        prev = "Anfangsbegriff " + "abc " * 700 + "Endbegriff"
+        q = v2.build_query("ok", prev)
+        assert "Endbegriff" in q.split() and "Anfangsbegriff" not in q.split()
+
     def test_paths_in_the_prompt_do_not_reach_the_query(self):
         assert "domes" not in v2.build_query(r"Fehler in C:\Users\domes\proj\main.py beim Daemon", "").split()
 
