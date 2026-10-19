@@ -90,6 +90,12 @@ class TestIterHumanPrompts:
         prev = list(corpus.iter_human_prompts(p))[1]["prev_assistant"]
         assert len(prev) == corpus.PREV_ANSWER_CAP and prev.endswith("ENDE")
 
+    def test_cap_none_keeps_the_whole_previous_answer(self, tmp_path):
+        p = tmp_path / "proj" / "s1.jsonl"
+        _w(p, [_user("start", "u1"), _assistant("x" * 5000 + "ENDE"), _user("weiter so", "u2")])
+        assert len(list(corpus.iter_human_prompts(p, cap=None))[1]["prev_assistant"]) == 5004
+        assert len(list(corpus.iter_human_prompts(p, cap=100))[1]["prev_assistant"]) == 100
+
     def test_broken_lines_are_skipped(self, tmp_path):
         p = tmp_path / "proj" / "s1.jsonl"
         p.parent.mkdir(parents=True)

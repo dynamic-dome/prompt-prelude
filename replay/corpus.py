@@ -70,8 +70,10 @@ def _hook_view(text):
     return s
 
 
-def iter_human_prompts(path):
-    """Yields {session, uuid, ts, cwd, entrypoint, prompt, prev_assistant}."""
+def iter_human_prompts(path, cap=PREV_ANSWER_CAP):
+    """Yields {session, uuid, ts, cwd, entrypoint, prompt, prev_assistant}. `cap` kuerzt die letzte
+    Antwort auf ihre letzten `cap` Zeichen; `None` laesst sie ungekuerzt (Messbank: der Mod
+    bereinigt die ganze Antwort, bevor er kappt)."""
     turn_text = []  # Assistant-Text seit dem letzten Nutzer-Prompt
     prev = ""
     with open(path, encoding="utf-8", errors="replace") as fh:
@@ -95,7 +97,8 @@ def iter_human_prompts(path):
             if not text:
                 continue
             if turn_text:
-                prev = "\n".join(turn_text)[-PREV_ANSWER_CAP:]
+                prev = "\n".join(turn_text)
+                prev = prev if cap is None else prev[-cap:]
                 turn_text = []
             yield {"session": rec.get("sessionId"), "uuid": rec.get("uuid"),
                    "ts": rec.get("timestamp"), "cwd": rec.get("cwd"),
