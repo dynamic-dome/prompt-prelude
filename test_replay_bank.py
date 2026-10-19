@@ -173,3 +173,234 @@ class TestCli:
         assert rows[0]["positives"] == ["native-a/b"] and rows[0]["prompt"] == "x" * 30
         msg = capsys.readouterr().out
         assert "1 Faelle" in msg and "uebersprungen: 1" in msg and "C2" in msg
+
+
+# --- B4: Pools, Gate- und Gutachter-Pakete -----------------------------------
+
+from replay import v2_contract as v2  # noqa: E402
+
+
+def _hit(rid, **kw):
+    hit = {"record_id": rid, "snippet": f"Auszug {rid}.", "summary": None,
+           "superseded_by": None, "valid_from": "2026-09-01"}
+    hit.update(kw)
+    return hit
+
+
+def _pool_case(**kw):
+    case = {"case_id": "C1", "ts": "2026-09-28T06:48:35Z", "cwd": "C:\\proj\\p0", "session_start": False,
+            "prompt": "Docker Compose Healthcheck schlaegt fehl", "prev_answer": "Der Container startet nicht.",
+            "positives": ["agent-memory/a/learnings/L1"], "negatives": [], "expect_nothing": False,
+            "already_static": False}
+    case.update(kw)
+    return case
+
+
+class FakeSearch:
+    """Zeichnet die Daemon-Bodies auf; antwortet je Topf aus `by_prefix` (erstes Praefix)."""
+
+    def __init__(self, by_first_prefix=None):
+        self.by_first_prefix = by_first_prefix or {}
+        self.bodies = []
+
+    def __call__(self, body):
+        self.bodies.append(body)
+        return list(self.by_first_prefix.get(body["record_id_prefix"][0], []))
+
+
+class TestPools:
+    def test_pools_use_prefix_list_and_as_of_per_pot(self):
+        search = FakeSearch()
+        case = _pool_case()
+        bank.pools_for_case(case, search)
+        assert [b["record_id_prefix"] for b in search.bodies] == [
+            list(v2.POTS[pot]["prefixes"]) for pot in v2.POTS]
+        for body, pot in zip(search.bodies, v2.POTS):
+            assert body == {"query": v2.build_query(case["prompt"], case["prev_answer"]),
+                            "k": v2.POTS[pot]["k"], "record_id_prefix": list(v2.POTS[pot]["prefixes"]),
+                            "as_of": "2026-09-28T06:48:35Z", "caller": "prelude-bank"}
+
+    def test_candidate_shape_and_cids_are_sequential_per_pot(self):
+        search = FakeSearch({
+            "agent-memory/": [_hit("agent-memory/a/L1", summary="Kern 1"), _hit("native-x/y")],
+            "atlas/skill:": [_hit("atlas/skill:foo")],
+            "atlas/mcp-server:": [_hit("atlas/plugin:bar"), _hit("atlas/mcp-server:baz")]})
+        pools = bank.pools_for_case(_pool_case(), search)
+        assert list(pools) == ["learnings", "skills", "capabilities"]
+        assert [c["cid"] for c in pools["learnings"]] == ["l01", "l02"]
+        assert [c["cid"] for c in pools["skills"]] == ["s01"]
+        assert [c["cid"] for c in pools["capabilities"]] == ["c01", "c02"]
+        assert pools["learnings"][0] == {"cid": "l01", "pot": "learnings", "rid": "agent-memory/a/L1",
+                                         "summary": "Kern 1", "snippet": "Auszug agent-memory/a/L1.",
+                                         "valid_from": "2026-09-01"}
+
+    def test_superseded_hits_are_dropped(self):
+        search = FakeSearch({"agent-memory/": [_hit("agent-memory/old", superseded_by="L9"),
+                                               _hit("agent-memory/new"),
+                                               _hit("native-x/kept", superseded_by="")]})
+        learnings = bank.pools_for_case(_pool_case(), search)["learnings"]
+        # nur ein gesetztes superseded_by verwirft; cids zaehlen erst nach dem Filtern
+        assert [c["rid"] for c in learnings] == ["agent-memory/new", "native-x/kept"]
+        assert [c["cid"] for c in learnings] == ["l01", "l02"]
+
+    def test_demoted_prefix_goes_last(self):
+        search = FakeSearch({"agent-memory/": [_hit("haupt-wiki/queries/q1"), _hit("agent-memory/a"),
+                                               _hit("haupt-wiki/queries/q2"), _hit("native-x/b")]})
+        pools = bank.pools_for_case(_pool_case(), search)
+        assert [c["rid"] for c in pools["learnings"]] == [
+            "agent-memory/a", "native-x/b", "haupt-wiki/queries/q1", "haupt-wiki/queries/q2"]
+        assert [c["cid"] for c in pools["learnings"]] == ["l01", "l02", "l03", "l04"]
+
+    def test_repeated_record_keeps_first_chunk_only(self):
+        search = FakeSearch({"atlas/skill:": [_hit("atlas/skill:foo", snippet="erster"),
+                                              _hit("atlas/skill:foo", snippet="zweiter")]})
+        (cand,) = bank.pools_for_case(_pool_case(), search)["skills"]
+        assert cand["snippet"] == "erster"
+
+    def test_empty_query_skips_search(self):
+        search = FakeSearch()
+        pools = bank.pools_for_case(_pool_case(prompt="ok", prev_answer=""), search)
+        assert search.bodies == [] and pools == {pot: [] for pot in v2.POTS}
+
+    def test_failed_search_is_loud(self):
+        import pytest
+        with pytest.raises(RuntimeError, match="C1"):
+            bank.pools_for_case(_pool_case(), lambda body: None)
+
+
+def _pools_with(*rids):
+    return {"learnings": [{"cid": f"l{i:02d}", "pot": "learnings", "rid": rid, "summary": f"Kern {i}",
+                           "snippet": f"Auszug {i}", "valid_from": "2026-09-01"}
+                          for i, rid in enumerate(rids, 1)],
+            "skills": [], "capabilities": []}
+
+
+def _batch_row(cid, pools, session_start=False):
+    return {"case_id": cid, "session_start": session_start, "cwd": "C:\\proj", "prompt": f"prompt {cid}",
+            "prev_answer": "antwort", "system": v2.GATE_SYSTEM_V2, "user": "...", "pools": pools}
+
+
+def _reply(*cids):
+    return json.dumps({"learnings": [{"cid": c, "why": "passt"} for c in cids], "skills": [],
+                       "capabilities": [], "clarify": ""})
+
+
+class TestPrepare:
+    def test_batch_rows_carry_system_user_pools_and_no_gold(self):
+        case = _pool_case()
+        pools = _pools_with("agent-memory/a")
+        row = bank.gate_row(case, pools)
+        assert row["case_id"] == "C1" and row["pools"] == pools
+        assert row["system"] == v2.GATE_SYSTEM_V2
+        assert row["user"] == v2.render_gate_prompt(case["prompt"], case["prev_answer"], case["cwd"], pools)
+        for secret in ("positives", "negatives", "expect_nothing", "already_static"):
+            assert secret not in row
+
+    def test_prepare_writes_numbered_batches(self, tmp_path):
+        cases = [_pool_case(case_id=f"C{i}") for i in range(1, 6)]
+        (tmp_path / "cases.jsonl").write_text(
+            "".join(json.dumps(c) + "\n" for c in cases), encoding="utf-8")
+        search = FakeSearch({"agent-memory/": [_hit("agent-memory/a")]})
+        assert bank.main(["prepare", "--cases", str(tmp_path / "cases.jsonl"), "--bank-dir", str(tmp_path),
+                          "--batch-size", "2"], search=search) == 0
+        files = sorted((tmp_path / "gate_batches").glob("*.jsonl"))
+        assert [f.name for f in files] == ["01.jsonl", "02.jsonl", "03.jsonl"]
+        rows = [json.loads(line) for f in files for line in f.read_text(encoding="utf-8").splitlines()]
+        assert [r["case_id"] for r in rows] == ["C1", "C2", "C3", "C4", "C5"]
+        assert rows[0]["pools"]["learnings"][0]["cid"] == "l01"
+        assert len(search.bodies) == 5 * len(v2.POTS)
+
+
+class TestCollect:
+    def test_collect_skips_cases_without_gate_reply(self):
+        pools = _pools_with("agent-memory/a", "native-x/b")
+        rows = [_batch_row("C1", pools), _batch_row("C2", pools)]
+        results, judge, missing = bank.collect_batch(rows, {"C1": _reply("l02")})
+        assert [r["case_id"] for r in results] == ["C1"] and missing == ["C2"]
+        assert results[0]["kept"]["learnings"] == [{"cid": "l02", "why": "passt", "rid": "native-x/b"}]
+        assert results[0]["is_parsed"] is True
+
+    def test_unknown_cid_and_garbage_reply_keep_nothing_but_are_recorded(self):
+        pools = _pools_with("agent-memory/a")
+        rows = [_batch_row("C1", pools), _batch_row("C2", pools)]
+        results, judge, missing = bank.collect_batch(rows, {"C1": _reply("l09"), "C2": "kein json"})
+        assert missing == []
+        assert [r["kept"]["learnings"] for r in results] == [[], []]
+        assert [r["is_parsed"] for r in results] == [True, False]
+        assert judge == []
+
+    def test_session_start_allows_third_learning(self):
+        pools = _pools_with("agent-memory/a", "native-x/b", "native-x/c")
+        reply = _reply("l01", "l02", "l03")
+        (normal,), _, _ = bank.collect_batch([_batch_row("C1", pools)], {"C1": reply})
+        (start,), _, _ = bank.collect_batch([_batch_row("C1", pools, session_start=True)], {"C1": reply})
+        assert len(normal["kept"]["learnings"]) == 2 and len(start["kept"]["learnings"]) == 3
+
+    def test_judge_rows_are_blind_and_one_per_kept_entry(self):
+        pools = _pools_with("agent-memory/a", "native-x/b")
+        row = _batch_row("C1", pools)
+        _, judge, _ = bank.collect_batch([row], {"C1": _reply("l01", "l02")})
+        assert [(j["case_id"], j["rid"]) for j in judge] == [("C1", "agent-memory/a"), ("C1", "native-x/b")]
+        assert judge[0] == {"case_id": "C1", "rid": "agent-memory/a", "prompt": "prompt C1",
+                            "context": "antwort", "cwd": "C:\\proj", "summary": "Kern 1",
+                            "snippet": "Auszug 1"}
+        for key in ("pot", "cid", "valid_from", "source", "variant", "why"):
+            assert key not in judge[0]
+
+    def test_collect_cli_reads_numbered_files_and_writes_results(self, tmp_path, capsys):
+        pools = _pools_with("agent-memory/a")
+        (tmp_path / "gate_batches").mkdir()
+        (tmp_path / "gate_out").mkdir()
+        (tmp_path / "gate_batches" / "01.jsonl").write_text(
+            json.dumps(_batch_row("C1", pools)) + "\n" + json.dumps(_batch_row("C2", pools)) + "\n",
+            encoding="utf-8")
+        (tmp_path / "gate_batches" / "02.jsonl").write_text(
+            json.dumps(_batch_row("C3", pools)) + "\n", encoding="utf-8")
+        (tmp_path / "gate_out" / "01.jsonl").write_text(
+            json.dumps({"case_id": "C1", "reply": _reply("l01")}) + "\n", encoding="utf-8")
+        assert bank.main(["collect", "--bank-dir", str(tmp_path)]) == 0
+        res = [json.loads(x) for x in (tmp_path / "gate_results.jsonl").read_text(encoding="utf-8").splitlines()]
+        assert [r["case_id"] for r in res] == ["C1"]
+        judge = [json.loads(x) for x in (tmp_path / "judge_batches" / "01.jsonl").read_text(
+            encoding="utf-8").splitlines()]
+        assert [(j["case_id"], j["rid"]) for j in judge] == [("C1", "agent-memory/a")]
+        assert not (tmp_path / "judge_batches" / "02.jsonl").exists()
+        out = capsys.readouterr().out
+        assert "1 von 3" in out and "C2" in out and "C3" in out
+
+
+class TestBriefs:
+    def test_briefs_exist_with_contract_terms(self):
+        from pathlib import Path
+        here = Path(bank.__file__).resolve().parent
+        gate = (here / "GATE_V2_BRIEF.md").read_bytes().decode("utf-8")
+        judge = (here / "JUDGE_V2_BRIEF.md").read_bytes().decode("utf-8")
+        assert "GATE_SYSTEM_V2" in gate and "gate_out" in gate and '"case_id"' in gate
+        for label in ("relevant", "marginal", "noise", "duplicate", "misleading"):
+            assert label in judge
+        assert "judge_out" in judge and "opus" in judge.lower()
+        for text in (gate, judge):
+            assert text.count("\r\n") == text.count("\n") > 0
+
+
+class TestMakeSearch:
+    def test_posts_body_to_search_endpoint_caches_and_counts_failures(self, monkeypatch):
+        import prompt_prelude as pp
+        from replay.round4 import Daemon
+        sent = []
+
+        def fake_post(url, body, timeout):
+            sent.append((url, body, timeout))
+            if body["query"] == "boom":
+                raise OSError("down")
+            return {"results": [{"record_id": "x"}]}
+
+        monkeypatch.setattr(pp, "_http_post_json", fake_post)
+        monkeypatch.setattr(pp, "_daemon_url", lambda: "http://daemon.invalid")
+        daemon = Daemon(timeout=7.0)
+        search = bank.make_search(daemon)
+        body = {"query": "alpha", "k": 3, "caller": "prelude-bank"}
+        assert search(body) == [{"record_id": "x"}] and search(dict(body)) == [{"record_id": "x"}]
+        assert sent == [("http://daemon.invalid/search", body, 7.0)]
+        assert search({"query": "boom"}) is None
+        assert (daemon.calls, daemon.failures) == (2, 1)
