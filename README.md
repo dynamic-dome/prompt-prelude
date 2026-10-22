@@ -346,11 +346,22 @@ Leerlauf 59 %. Jeder Ping wird mit Latenz nach `keepalive.jsonl` geloggt
 `powershell -ExecutionPolicy Bypass -File tools\register-keepalive-task.ps1 [-Unregister]`.
 Erfolgskriterium: `daemon_latency_ms >= 450` sinkt in der Telemetrie unter 8 %.
 
-**Messung 22.10.2026 (DCO #9486): Kriterium verfehlt.** In `prompt_prelude.jsonl` liegen seit 05.10.
-21,0 % der Calls bei 450 ms oder mehr (240 von 1.142), vor dem Keepalive waren es 17,2 % (495 von 2.872).
-Nach Woche: KW41 19,8 %, KW42 15,4 %, KW43 27,9 %. Median 223 ms, p90 542 ms.
-1.136 der Calls kamen höchstens 6 Minuten nach einem Ping, auch davon waren 20,6 % langsam.
-Leerlauf ist also nicht die Ursache. Ob der Task zurückgebaut wird, entscheidet der Owner (Bündelplan AOS-5).
+**Messung 22.10.2026 (DCO #9486, gegengeprüft): Kriterium verfehlt.** Seit 05.10. lagen 21 % der Calls bei
+450 ms oder mehr (242 von 1.144), vor dem Keepalive (02.07. bis 28.09.) 17,2 %. Median 223 ms, p90 542 ms.
+Die Schwelle 450 ms vermischt zwei Dinge, deshalb zählen Fehlschläge (`daemon_top` leer, 518–674 ms) und
+langsame Erfolge getrennt:
+
+| Zeitraum | Calls | Fehlschlag | Erfolg, aber ≥ 450 ms |
+|---|---|---|---|
+| vorher gesamt | 2.872 | 15,9 % | 1,4 % |
+| 2 Wochen vor dem Keepalive | 415 | 12,3 % | 1,7 % |
+| Anlaufwoche 28.09. bis 04.10. | 329 | 3,0 % | 1,2 % |
+| seit 05.10. | 1.145 | 15,3 % | 5,9 % |
+
+In der ersten Woche sah das Keepalive wirksam aus, danach fiel der Wert auf den alten Stand zurück. Die langsamen
+Erfolge haben zugenommen. Ob Leerlauf eine Rolle spielt, lässt sich mit diesen Daten **nicht** entscheiden:
+Bei Pings alle 5 Minuten liegen fast alle Calls im Ping-Fenster. Die 6 Calls außerhalb waren alle langsam,
+das ist aber eine zu kleine Stichprobe. Ob der Task zurückgebaut wird, entscheidet der Owner (Bündelplan AOS-5).
 
 ## Housekeeping
 `.dedupe/`-Dateien älter als 7 Tage werden bei jedem Lauf fail-soft gelöscht.
