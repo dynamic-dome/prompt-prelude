@@ -39,7 +39,7 @@ class TestConstants:
         assert v2.START_LEARNINGS_KEEP == 3
 
     def test_caps(self):
-        assert (v2.PROMPT_CAP, v2.CONTEXT_CAP, v2.QUERY_TERMS_MAX, v2.BUDGET_MS) == (1500, 600, 10, 4000)
+        assert (v2.PROMPT_CAP, v2.CONTEXT_CAP, v2.QUERY_TERMS_MAX, v2.BUDGET_MS) == (1500, 600, 10, 10000)
 
     def test_stop_words_v2_is_a_tuple_containing_todays_stop_words(self):
         assert isinstance(v2.STOP_WORDS_V2, tuple)

@@ -161,6 +161,8 @@ Topf erreichen (Claudes Entscheidung).
 - Zeitbudget pro Prompt **harte Grenze 4 s** gesamt (Owner, 2026-10-19, Option a): nach 4 s abbrechen, nichts
   einspielen, Grund protokollieren — kein stilles Ausweichen auf die SQLite-Notsuche. Die Abbruchquote ist eine
   Kennzahl (Abschnitt 8).
+- **Nachtrag 2026-10-26 (Owner):** Live-Grenze auf **10 s** angehoben. Schatten 0.3.1 (effort low, 276 Läufe):
+  nur 31 % fertig in 4 s, 96,8 % in 10 s, p95 8,9 s. Bei 4 s wäre die Abbruchquote ~69 % statt der erwarteten 10 %.
 - Modellwahl: ein Haiku-Aufruf zum Prüfen (gemessen); Kosten gering.
 - **Atlas-Daemon darf erweitert werden** (Owner-Freigabe 2026-10-19): additive Änderungen an `/search` im Repo
   `agent-memory-atlas` (mehrere `source_system`-Werte, Präfixfilter auf `record_id` — intern existiert
