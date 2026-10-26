@@ -32,11 +32,11 @@ class TestConstants:
             "agent-memory/", "native-", "codex-native/", "shared-memory/", "membrain/",
             "haupt-wiki/queries/")
         assert v2.POTS["learnings"]["demote"] == ("haupt-wiki/queries/",)
-        assert (v2.POTS["learnings"]["k"], v2.POTS["learnings"]["keep"]) == (12, 2)
+        assert (v2.POTS["learnings"]["k"], v2.POTS["learnings"]["keep"]) == (12, 1)
         assert v2.POTS["skills"] == {"prefixes": ("atlas/skill:", "atlas/subagent:"), "k": 8, "keep": 2}
         assert v2.POTS["capabilities"] == {"prefixes": ("atlas/mcp-server:", "atlas/plugin:"),
                                            "k": 8, "keep": 2}
-        assert v2.START_LEARNINGS_KEEP == 3
+        assert v2.START_LEARNINGS_KEEP == 2
 
     def test_caps(self):
         assert (v2.PROMPT_CAP, v2.CONTEXT_CAP, v2.QUERY_TERMS_MAX, v2.BUDGET_MS) == (1500, 600, 10, 10000)
@@ -152,7 +152,8 @@ class TestGatePrompt:
         assert "Im Zweifel keinen. Ein Eintrag, der in eine falsche Richtung lenken könnte, wird weggelassen." in s
         assert "Widerspricht ein Eintrag erkennbar dem Prompt, lass ihn weg." in s
         assert "why" in s and "Pflicht" in s and "clarify" in s and "unverständlich" in s
-        assert "Höchstens 2 Einträge je Topf" in s and "höchstens 3" in s
+        assert "learnings: höchstens 1, beim ersten Prompt einer Sitzung" in s and ") höchstens 2;" in s
+        assert "skills und capabilities: je höchstens 2." in s
 
     def test_render_has_all_sections_and_candidate_lines(self):
         out = v2.render_gate_prompt("Mach das", "letzte Antwort", "C:\\proj", _pools())
@@ -184,14 +185,14 @@ class TestParseReply:
                        {"cid": "l03", "why": "c"}, {"cid": "x9", "why": "d"}],
             skills=[{"cid": "s01", "why": "a"}, {"cid": "s02", "why": "b"}, {"cid": "s03", "why": "c"}]),
             _pools(), False)
-        assert [k["cid"] for k in r["kept"]["learnings"]] == ["l01", "l02"]
+        assert [k["cid"] for k in r["kept"]["learnings"]] == ["l01"]
         assert [k["cid"] for k in r["kept"]["skills"]] == ["s01", "s02"]
         assert r["is_parsed"] is True
 
-    def test_first_prompt_of_a_session_allows_three_learnings(self):
+    def test_first_prompt_of_a_session_allows_two_learnings(self):
         learn = [{"cid": c, "why": "w"} for c in ("l01", "l02", "l03")]
         r = v2.parse_reply(_reply(learnings=learn), _pools(), True)
-        assert [k["cid"] for k in r["kept"]["learnings"]] == ["l01", "l02", "l03"]
+        assert [k["cid"] for k in r["kept"]["learnings"]] == ["l01", "l02"]
 
     def test_empty_object_is_parsed_and_keeps_nothing(self):
         # Gepinnt, weil der Mod (parseReplyV2) es spiegeln muss: '{}' ist lesbar, behaelt aber nichts.

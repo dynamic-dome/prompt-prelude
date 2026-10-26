@@ -382,10 +382,10 @@ class TestCollect:
             (res,), _, _ = bank.collect_batch([_batch_row("C1", pools, **kw)], {"C1": reply})
             return len(res["kept"]["learnings"])
 
-        assert kept(prev_answer="") == 3                       # leeres Ende der Antwort: dritter Eintrag erlaubt
-        assert kept(prev_answer="antwort") == 2
-        assert kept(prev_answer="", session_start=False) == 3  # Telemetrie-Flag zaehlt nicht ...
-        assert kept(prev_answer="antwort", session_start=True) == 2   # ... in keine Richtung
+        assert kept(prev_answer="") == 2                       # leeres Ende der Antwort: zweiter Eintrag erlaubt
+        assert kept(prev_answer="antwort") == 1
+        assert kept(prev_answer="", session_start=False) == 2  # Telemetrie-Flag zaehlt nicht ...
+        assert kept(prev_answer="antwort", session_start=True) == 1   # ... in keine Richtung
 
     def test_reply_written_as_a_nested_object_is_read_like_text(self):
         pools = _pools_with("agent-memory/a", "native-x/b")
@@ -399,7 +399,7 @@ class TestCollect:
         pools = _pools_with("agent-memory/a", "native-x/b")
         row = _batch_row("C1", pools)
         _, judge, _ = bank.collect_batch([row], {"C1": _reply("l01", "l02")})
-        assert [(j["case_id"], j["rid"]) for j in judge] == [("C1", "agent-memory/a"), ("C1", "native-x/b")]
+        assert [(j["case_id"], j["rid"]) for j in judge] == [("C1", "agent-memory/a")]  # learnings: keep 1
         assert judge[0] == {"case_id": "C1", "rid": "agent-memory/a", "prompt": "prompt C1",
                             "context": "antwort", "cwd": "C:\\proj", "summary": "Kern 1",
                             "snippet": "Auszug 1"}

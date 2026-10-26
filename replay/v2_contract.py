@@ -14,12 +14,13 @@ POTS = {
                      "haupt-wiki/queries/"),
         "demote": ("haupt-wiki/queries/",),
         "k": 12,
-        "keep": 2,
+        # 1 seit 2026-10-26: Platz 2 war im Gutachter nur zu 18 % relevant (Platz 1: 30 %)
+        "keep": 1,
     },
     "skills": {"prefixes": ("atlas/skill:", "atlas/subagent:"), "k": 8, "keep": 2},
     "capabilities": {"prefixes": ("atlas/mcp-server:", "atlas/plugin:"), "k": 8, "keep": 2},
 }
-START_LEARNINGS_KEEP = 3
+START_LEARNINGS_KEEP = 2
 
 PROMPT_CAP = 1500
 CONTEXT_CAP = 600
@@ -158,9 +159,9 @@ GATE_SYSTEM_V2 = "\n".join([
     "Nicht behalten: thematisch verwandt, aber für die konkrete Aufgabe nicht nützlich; nur Wortgleichheit; "
     "ein anderes Projekt; allgemeiner Hintergrund.",
     "",
-    f"Höchstens {POTS['learnings']['keep']} Einträge je Topf "
-    f"(learnings beim ersten Prompt einer Sitzung, erkennbar am leeren Ende der vorherigen Antwort: "
-    f"höchstens {START_LEARNINGS_KEEP}). Im Zweifel keinen. Ein Eintrag, der in eine falsche Richtung "
+    f"learnings: höchstens {POTS['learnings']['keep']}, beim ersten Prompt einer Sitzung (erkennbar am leeren "
+    f"Ende der vorherigen Antwort) höchstens {START_LEARNINGS_KEEP}; skills und capabilities: je höchstens "
+    f"{POTS['skills']['keep']}. Im Zweifel keinen. Ein Eintrag, der in eine falsche Richtung "
     "lenken könnte, wird weggelassen. Widerspricht ein Eintrag erkennbar dem Prompt, lass ihn weg.",
     "Zu jedem behaltenen Eintrag ist why Pflicht: ein Satz, höchstens 12 Wörter, was er für genau diesen "
     "Prompt bringt. Ohne tragfähiges why wird der Eintrag nicht behalten.",
