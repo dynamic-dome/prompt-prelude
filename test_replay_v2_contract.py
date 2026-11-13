@@ -49,7 +49,7 @@ class TestConstants:
 
 class TestCleanText:
     def test_strips_paths_urls_and_code(self):
-        t = v2.clean_text('Schau in C:\\Users\\domes\\x\\main.py und https://a.b/c ```py\nx=1\n``` '
+        t = v2.clean_text('Schau in C:\\Users\\someone\\x\\main.py und https://a.b/c ```py\nx=1\n``` '
                           'warum hängt der Daemon')
         assert "C:" not in t and "https" not in t and "x=1" not in t and "Daemon" in t
 
@@ -141,7 +141,7 @@ class TestBuildQuery:
         assert "Endbegriff" in q.split() and "Anfangsbegriff" not in q.split()
 
     def test_paths_in_the_prompt_do_not_reach_the_query(self):
-        assert "domes" not in v2.build_query(r"Fehler in C:\Users\domes\proj\main.py beim Daemon", "").split()
+        assert "someone" not in v2.build_query(r"Fehler in C:\Users\someone\proj\main.py beim Daemon", "").split()
 
 
 class TestGatePrompt:
