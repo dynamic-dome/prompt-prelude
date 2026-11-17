@@ -142,7 +142,7 @@ v11 umgesetzt (NOTES Befund 14).
 ## Runde 4: Getrennte Töpfe und Index-Varianten — vorregistriert VOR der Messung
 
 Stand 2026-10-05, Owner-Auftrag per `/goal`. Anlass sind drei Messungen am
-aktiven Atlas-Build (DCO-Todo #9652):
+aktiven Atlas-Build:
 
 - Das Embedding-Modell liest höchstens 128 Tokens; 78 % der Chunks sind länger,
   die Bedeutungssuche sieht 51 % des Chunk-Texts.
@@ -173,7 +173,7 @@ Hook-Logik (reine Funktionen in `prompt_prelude.py`, gemessen per Replay):
   - Mentoren unverändert aus der flachen Suche.
 - **B+** (nur beschreibend, keine Übernahme in dieser Runde): wie B, aber
   beide Töpfe auch bei Fortsetzungen. Nur auf dem Baseline-Index.
-- **V11** (Nebenmessung zu #9489, nur beschreibend): wie V0, aber Caps auch bei
+- **V11** (Nebenmessung, nur beschreibend): wie V0, aber Caps auch bei
   Fortsetzungen. Zeigt an neuen Prompts, was die v12-Unterdrückung bewirkt.
 
 Index-Builds (alle aus demselben Quellstand, außerhalb des Live-Index):
@@ -268,7 +268,7 @@ Dezil, 36 % Note 2) und τ = 0,846 (e5, 80. Dezil als Rückfall-Wahl, 31 %).
 
 Beschreibend, ohne Entscheidung:
 
-- **V11 gegen V0 bei Fortsetzungen (#9489):** Mit Caps (V11) bekommen 46 von 74
+- **V11 gegen V0 bei Fortsetzungen:** Mit Caps (V11) bekommen 46 von 74
   Prompts Material, 3 hilfreich, 40 nur Rauschen. Ohne Caps (v12) 15, 1 und 12.
   Die v12-Unterdrückung senkt das Rauschen von 54 % auf 16 % und kostet zwei
   hilfreiche Prompts.

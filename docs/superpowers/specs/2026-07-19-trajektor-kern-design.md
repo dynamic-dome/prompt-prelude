@@ -1,8 +1,7 @@
 # Trajektor-Kern — PostToolUse-Drift-Beobachter (T-12)
 
 *Design-Spec 2026-07-19 · beschlossen im Brainstorming (User-approved) · Roadmap Punkt 2
-(wiki/todos/2026-07-18-prompt-prelude-erweiterungen.md) · Basis: agent-lab-vault
-synthesis/synth-trajektor-context-router.md, bewusst abgespeckt.*
+(private Planungsnotiz) · Basis: eine Synthese-Notiz aus einem separaten privaten Ideen-Vault, bewusst abgespeckt.*
 
 ## Ziel
 

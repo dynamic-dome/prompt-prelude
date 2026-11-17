@@ -1,7 +1,7 @@
 # Design: Zuverlässig das Richtige einspielen (Prelude v2)
 
-Stand: 2026-10-19 · Owner: Dominic · Autor: Claude (Opus 5.5), aus dem Brainstorming in der DCO-Sitzung vom 2026-10-19
-Status: Entwurf zur Freigabe · Bezug: DCO-Todo #8953 (Hub-Tags), #9789 (Atlas-Eval), Befund 17 (`NOTES-live-findings.md`)
+Stand: 2026-10-19 · Owner: Dominic · Autor: Claude (Opus 5.5), aus dem Brainstorming in der Sitzung vom 2026-10-19
+Status: Entwurf zur Freigabe · Bezug: Befund 17 (`NOTES-live-findings.md`)
 
 ## 1. Zweck und Warum
 
@@ -15,11 +15,11 @@ Dass der Owner selbst in Atlas stöbert, ist zweitrangig (Owner, 2026-10-19).
 
 ## 2. Ist-Zustand (gemessen 2026-10-19, nur lesend)
 
-Quellen: Recon-Workflow `wf_da0fd154-e74`, Artefakte unter `~/AI/artifacts/atlas-injection-recon/` (lokal, enthält
-Prompt-Paraphrasen, nicht ins Repo kopieren), Hub-Design-Workflow `wf_cf8965ef-a09` (`~/AI/artifacts/atlas-hub-design/`).
+Quellen: Recon-Workflow, Artefakte unter `<workspace>/artifacts/atlas-injection-recon/` (lokal, enthält
+Prompt-Paraphrasen, nicht ins Repo kopieren), Hub-Design-Workflow (`<workspace>/artifacts/atlas-hub-design/`).
 
 - **Nur `prompt_prelude.py` spielt ein** (`~/.claude/settings.json`, `UserPromptSubmit`). Der Mod
-  `claude-mods/prelude-gate` läuft seit 2026-10-05 nur im Schatten (`plugin.json`: Modi `shadow|off`, „Spielt nichts
+  Der Mod `prelude-gate` (separates Mods-Repo) läuft seit 2026-10-05 nur im Schatten (`plugin.json`: Modi `shadow|off`, „Spielt nichts
   ein“; 881 Protokolle unter `replay/data/shadow/`). Codex bekommt nichts (Prompt-Hooks in `~/.codex/config.toml`
   deaktiviert).
 - **Zündung:** etwa 5 % der Prompts (~6/Tag); strenge Gates (`no_work_signal`, `too_short`, `low_domain_confidence`).
@@ -39,7 +39,7 @@ Prompt-Paraphrasen, nicht ins Repo kopieren), Hub-Design-Workflow `wf_cf8965ef-a
   4. SQLite-Notweg (Daemon-Budget 0,5 s/1,2 s): lieferte die Hälfte der Einspielungen, 75 % Rauschen.
   5. Keine Relevanzhürde: es wird eingespielt, sobald irgendetwas gefunden ist.
 - **Nicht die Ursache** (gemessen, nachrangig): Hub-Tag-Alphabet (6 % der Plätze), Kopien (3 Plätze), themenlose
-  Learnings (nicht messbar schädlich). Die Kappung der Hub-Tags ist verworfen (#9789).
+  Learnings (nicht messbar schädlich). Die Kappung der Hub-Tags ist verworfen.
 - **Schatten-Gate (Befund 17, 125 Prompts):** hilfreich 17 % statt 4 %, Rauschen 10 % statt 24 %, Treffsicherheit je
   Eintrag 26 % statt 7 %. Besser, aber weit vom Ziel: der Pool entsteht aus derselben 12-Wort-Anfrage.
 
@@ -116,7 +116,7 @@ geändert hat oder noch nichts eingespielt wurde (Claudes Entscheidung, Builder 
 
 ## 8. Messbank und Erfolgskriterien
 
-**Grundstock:** die 39 bewerteten Fälle (`~/AI/artifacts/atlas-injection-recon/judge/judgments.json`, `sample.json`):
+**Grundstock:** die 39 bewerteten Fälle (`<workspace>/artifacts/atlas-injection-recon/judge/judgments.json`, `sample.json`):
 Positive = die 22 „besser fehlend“-Kandidaten + 8 relevante Treffer; harte Negative = 65 Rausch-Plätze; 18 Fälle
 „erwartet: nichts einspielen“; Zeitreise-Filter (keine Records nach dem Prompt-Zeitpunkt). Erweiterung um die 881
 Schatten-Protokolle als Silber-Labels; ~10 Fälle vom Owner kalibrieren lassen, ~30 % als Hold-out.
@@ -157,7 +157,7 @@ Topf erreichen (Claudes Entscheidung).
 
 ## 10. Rahmenbedingungen
 
-- Windows 11, Claude Code (Mod-System `claude-mods`, `CLAUDE_CODE_PLUGIN_DIRS`), Atlas-Daemon `127.0.0.1:7801`.
+- Windows 11, Claude Code (Mod-System, `CLAUDE_CODE_PLUGIN_DIRS`), Atlas-Daemon `127.0.0.1:7801`.
 - Zeitbudget pro Prompt **harte Grenze 4 s** gesamt (Owner, 2026-10-19, Option a): nach 4 s abbrechen, nichts
   einspielen, Grund protokollieren — kein stilles Ausweichen auf die SQLite-Notsuche. Die Abbruchquote ist eine
   Kennzahl (Abschnitt 8).

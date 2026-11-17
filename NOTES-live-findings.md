@@ -3,7 +3,7 @@
 Aus echter Telemetrie (`prompt_prelude.jsonl`), nicht spekuliert.
 
 ## Befund 1: Dedupe unterdrückt wiederholt-relevante Aufträge
-Session `28eca95c…`: erster UI-Prompt `fired ui-frontend`, ein späterer Prompt, der
+Eine Session: erster UI-Prompt `fired ui-frontend`, ein späterer Prompt, der
 EXPLIZIT erneut den UI-RAG-Auftrag wollte, wurde `skip: deduped`. Der Cry-Wolf-Trade-off
 ist real, aber die harte "einmal pro Session"-Regel ist zu grob.
 
@@ -49,8 +49,8 @@ Routing-/Compliance-Auswertungen Mojibake-vergiftet, NICHT mit v4 mischen.
 
 ## Befund 6 (2026-07-07): general-Fallback injizierte ungefiltertes Rauschen
 Der v3-Breitband-Fallback nahm blind die Top-3 von `/search` — bei Smalltalk-/
-Junk-Queries irrelevante Wiki-Notizen (Live: Gammateleskop-Vorlesung + Flughafen-
-Roboter auf einen Projekt-Prompt, gematcht übers Mojibake-Fragment "Flug").
+Junk-Queries irrelevante Wiki-Notizen (Live: eine Vorlesungsnotiz + eine Robotik-
+Notiz auf einen Projekt-Prompt, gematcht übers Mojibake-Fragment "Flug").
 Drei Ursachen: kein Relevanz-Gate, Index-Scope = ganzer Atlas statt Capabilities,
 Domain-Labels verschmutzten die Query. Score-Gate unmöglich: `/search`-Scores
 sind RRF-Rang-Fusion (~0.014–0.023, gut wie Müll identisch — gemessen).
@@ -210,11 +210,11 @@ gebraucht wurde.
 
 **Neue Befunde:**
 1. **Automaten-Prompts:** 59/251 fired (24 %) gingen an automatisierte Prompts,
-   die der `machine_prompt`-Filter nicht kennt: DCO-Headless
+   die der `machine_prompt`-Filter nicht kennt: Headless-Automations
    (`Du bist Claude Zentrale…`, 37 fired — allein 25× die tägliche
    Abend-Zusammenfassung, teils mit `subagent-briefing`-Hint) und
    `<cross-session-message …>` (22 fired). Die Prelude injiziert damit Material
-   in DCO-Bot-Digests. Die Hub-Records der Top-Caps-Liste (crazy-professor,
+   in Bot-Digests. Die Hub-Records der Top-Caps-Liste (crazy-professor,
    session-summary, notebooklm-plugin, memory-flow) stammen großteils aus diesen
    täglich identischen Prompts.
 2. **Daemon-Kaltstart:** 227/1.063 `/classify`-Calls (21 %) laufen ins
@@ -231,7 +231,7 @@ gebraucht wurde.
 4. **Relevanz-Stichprobe** (n=24 zufällig, vom Agenten subjektiv beurteilt —
    HYPOTHESE, kein Messwert): klar relevant 3, teilweise 3, irrelevant ~11,
    Automaten 7. Treffer mit echtem Nutzen waren v. a. Learnings mit
-   Projektbezug (z. B. DCO L140 "gepushter Code ist nicht live" auf
+   Projektbezug (z. B. ein gespeichertes Learning "gepushter Code ist nicht live" auf
    "starte den Server neu").
 5. **Work-Signal-Gate:** 424 `no_work_signal`-Skips mit ≥ 70 Zeichen
    Preview; Stichprobe 15: ~9–10 sind erkennbar Arbeitsaufträge in Umgangs-/
@@ -243,11 +243,11 @@ gebraucht wurde.
 aus `SKILL_ROUTING` entfernt (Latte gerissen). Automaten-Filter:
 `<cross-session-message` als `machine_prompt`-Marker; neuer Skip `headless`
 für `CLAUDE_CODE_ENTRYPOINT=sdk*` (generisches Harness-Signal statt
-DCO-Präfix — verifiziert an Transkripten: DCO-Digests `entrypoint=sdk-cli`,
+eines projektspezifischen Präfixes — verifiziert an Transkripten: Automations-Digests `entrypoint=sdk-cli`,
 interaktiv `cli`); Feld `entrypoint` auf jedem Event. Telemetrie v10.
 286 Tests grün, inkl. Subprozess-E2E für die Env-Vererbung; echte
 Telemetrie per Vorher/Nachher-Snapshot unberührt. **Live-Beleg offen:** erstes
-v10-Event mit `entrypoint=sdk-cli` + `skip=headless` aus einem DCO-Lauf.
+v10-Event mit `entrypoint=sdk-cli` + `skip=headless` aus einem Automations-Lauf.
 
 **Konsequenz-Kandidaten (Owner-Entscheid offen):** Transkript-Aufbewahrung
 hochsetzen (zeitkritisch, Verlust läuft täglich) · Automaten-Filter (Präfixe +
@@ -319,7 +319,7 @@ erster Prompt einer Session (keine Assistant-Antwort im Transkript, ≥ 40
 Zeichen) umgeht Work-Signal- und Confidence-Gate und bekommt bis zu 2
 Projekt-Treffer mit Inhalt. Fortsetzungen unverändert.
 
-**E2E (isolierte Kopie, echter Daemon):** DCO-Session-Start feuert mit
+**E2E (isolierte Kopie, echter Daemon):** Session-Start einer Automation feuert mit
 Projektkarte (359 ms inkl. Python-Start, Daemon 56 ms), Fortsetzung bleibt
 still. Sichtbare Grenzen: der mitgelieferte Caps-Treffer war unpassend (passt
 zu 18 % Caps-Präzision), die Projektkarte eher allgemein (Entity-Seite statt
@@ -357,21 +357,21 @@ Messung nicht; das Inhalts-Echo-Signal ist bei 60-Zeichen-Hints unbrauchbar
 ~1 % Nutzung. Explorativ auf den Judge-Daten: ohne Caps sinkt bei
 Fortsetzungen noise 24 % → 4 %, useful 15 % → 7 % (Treffsicherheit 33 % → 50 %).
 v11-Projektkarten (mit Inhalt statt Verweis) sind hier noch nicht enthalten —
-ihr Nutzungstest braucht echte v11-Session-Starts (#9488).
+ihr Nutzungstest braucht echte v11-Session-Starts.
 
 **Umgesetzt als v12 (Owner-Delegation 2026-09-28: "triff du die
 Entscheidung"):** Caps aus bei NACHWEISLICHER Fortsetzung (Transkript enthält
 schon eine Assistant-Antwort); Session-Start (so validiert) und unbekannter
 Zustand behalten sie. Feld `caps_suppressed`. Live-Messlatte: Anteil
 `no_material` bei Fortsetzungen steigt, Rauschen sinkt — Nachmessung mit
-Judge auf neuen Fortsetzungs-Prompts in Runde 4 (#9489). E2E (isolierte Kopie,
+Judge auf neuen Fortsetzungs-Prompts in Runde 4. E2E (isolierte Kopie,
 echter Daemon): 2 Caps unterdrückt, ohne Mentoren still. Nebenbefund:
 Gesamtlaufzeit schwankte 0,4–2,7 s bei Daemon 50–80 ms (Prozessstart/Scanner
 auf frischer Temp-Kopie vermutet) — Hook-Timeout ist 2 s, Live-Laufzeit prüfen.
 
 ## Befund 16 (2026-10-05, Runde 4): Getrennte Töpfe senken das Rauschen, aber nichts hebt den Nutzen — und unter strengem Judge hilft das Material bei 4 %
 Vorregistriert in `docs/2026-09-28-plan-relevanz-replay.md` (Runde 4, Commit vor
-der Messung). Anlass: DCO-Todo #9652 (das Embedding sieht 51 % des Chunk-Texts;
+der Messung). Anlass: ein Index-Build-Befund (das Embedding sieht 51 % des Chunk-Texts;
 Capability-Karten sind 3 % des Index; `/search` kennt einen `scope`-Filter).
 Testmenge T: 125 unberührte Prompts, bei denen der v12-Hook sucht (51
 Session-Starts, 74 Fortsetzungen). Drei Index-Builds aus demselben Quellstand,
@@ -401,7 +401,7 @@ Zählungen selbst nachgeprüft; Kalibrierung 15 von 15 gleich.
    Im Navigation-Benchmark des Atlas steigt der sichtbare Gesamtwert von 0,435
    auf 0,465; eine der 17 Aufgaben verliert dabei alle Ziele, deshalb fällt das
    Regressions-Gate.
-5. **v12 an neuen Prompts bestätigt (#9489):** Caps bei Fortsetzungen hätten 40
+5. **v12 an neuen Prompts bestätigt:** Caps bei Fortsetzungen hätten 40
    von 74 Prompts nur Rauschen eingespielt, ohne sie sind es 12.
 6. **Töpfe auch bei Fortsetzungen wären schädlich:** Der Projekt-Topf liefert
    dort 108 Items, 2 davon mit Note 2.

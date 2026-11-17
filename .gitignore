@@ -9,3 +9,4 @@ pytest_tmp/
 replay/data/
 keepalive.jsonl
 keepalive.jsonl.1
+AGENTS.md

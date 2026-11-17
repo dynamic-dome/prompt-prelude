@@ -36,7 +36,7 @@ separate model that does not know which variant it is looking at (`replay/`).
 - It depends on my private search index (agent-memory-atlas: a local daemon, with a SQLite BM25 file
   as fallback). Without it the hook finds nothing and stays silent. It never blocks a prompt: every
   step is fail-soft and the hook always exits 0.
-- The index is expected under `~/AI/agent-memory-atlas/.atlas-index`; set `PRELUDE_ATLAS_ROOT` to
+- The index is expected under `<workspace>/agent-memory-atlas/.atlas-index` (default path is set in `prompt_prelude.py`); set `PRELUDE_ATLAS_ROOT` to
   point elsewhere, and `ATLAS_DAEMON_URL` for the daemon.
 - Built and used on Windows 11, Python standard library only.
 - The notes below and the measurement log `NOTES-live-findings.md` are in German.
@@ -48,6 +48,8 @@ License: MIT
 ---
 
 ## Technical notes (German)
+
+*The technical notes below are in German.*
 
 UserPromptSubmit-Hook, seit v9 (Advisory-Pivot, 2026-08-04) ein **Material-Kanal**:
 injiziert vorab gesuchte Capability-Treffer, frühere Fälle und (selten) einen
@@ -94,7 +96,7 @@ Phase 2 an ihre Lifecycle-Punkte um: `docs/2026-08-04-vorgehen-advisory-pivot.md
   und Session-Start bleiben; bei unbekanntem Session-Zustand alles wie v11.
 - **Headless-Läufe (v10):** `CLAUDE_CODE_ENTRYPOINT` beginnt mit `sdk`
   (`claude -p` = `sdk-cli`, Agent-SDK = `sdk-py`/`sdk-ts`) → `skip: "headless"`.
-  Befund 12: v9 injizierte 37× Material in DCO-Headless-Digests. Fehlt die
+  Befund 12: v9 injizierte 37× Material in headless bot digests. Fehlt die
   Variable, gilt der Lauf als interaktiv. Jedes Telemetrie-Event trägt
   `entrypoint`, sofern gesetzt.
 - **Re-Arm:** Prompts mit explizitem RAG-/Skill-Bezug ("welche skills",
@@ -346,7 +348,7 @@ Leerlauf 59 %. Jeder Ping wird mit Latenz nach `keepalive.jsonl` geloggt
 `powershell -ExecutionPolicy Bypass -File tools\register-keepalive-task.ps1 [-Unregister]`.
 Erfolgskriterium: `daemon_latency_ms >= 450` sinkt in der Telemetrie unter 8 %.
 
-**Messung 22.10.2026 (DCO #9486, gegengeprüft): Kriterium verfehlt.** Seit 05.10. lagen 21 % der Calls bei
+**Messung 22.10.2026 (gegengeprüft): Kriterium verfehlt.** Seit 05.10. lagen 21 % der Calls bei
 450 ms oder mehr (242 von 1.144), vor dem Keepalive (02.07. bis 28.09.) 17,2 %. Median 223 ms, p90 542 ms.
 Die Schwelle 450 ms vermischt zwei Dinge, deshalb zählen Fehlschläge (`daemon_top` leer, 518–674 ms) und
 langsame Erfolge getrennt:
